@@ -147,4 +147,23 @@ describe('corruption and versioning', () => {
     run('UPDATE chats SET branched_from=? WHERE id=?', ['parent', 'c1']);
     expect(one('SELECT branched_from FROM chats WHERE id=?', ['c1'])).toEqual({ branched_from: 'parent' });
   });
+
+  it('migrates a v4 database to v5: pin/folder/workspace columns and the folders table', async () => {
+    await openDatabase();
+    insertChat('c1', 'v4 chat');
+    run('PRAGMA user_version=4');
+    saveNow();
+    await openDatabase();
+    expect(pragmaValue('user_version')).toBe(SCHEMA_VERSION);
+    const row = one('SELECT title,pinned,folder_id,workspace FROM chats WHERE id=?', ['c1']);
+    expect(row).toEqual({ title: 'v4 chat', pinned: 0, folder_id: null, workspace: null });
+    // Folders table works and chats can reference it.
+    run('INSERT INTO folders VALUES(?,?,?)', ['f1', 'Work', 1]);
+    run('UPDATE chats SET pinned=1,folder_id=? WHERE id=?', ['f1', 'c1']);
+    expect(one('SELECT pinned,folder_id FROM chats WHERE id=?', ['c1'])).toEqual({ pinned: 1, folder_id: 'f1' });
+    // Deleting a folder leaves chats intact (the app nulls folder_id explicitly).
+    run('UPDATE chats SET folder_id=NULL WHERE folder_id=?', ['f1']);
+    run('DELETE FROM folders WHERE id=?', ['f1']);
+    expect(Number(one('SELECT COUNT(*) AS n FROM chats')?.n)).toBe(1);
+  });
 });

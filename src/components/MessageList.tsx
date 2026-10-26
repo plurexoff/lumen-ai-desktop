@@ -11,6 +11,10 @@ interface Props{
  stream:string;
  reasoning:string;
  error:string;
+ // Tool activity between text chunks (e.g. "Running read_file…") in the stream heading.
+ status?:string;
+ // Search jump target: the message to scroll to and flash.
+ highlightId?:string;
  variants:Record<string,MessageVariant[]>;
  providers:ProviderConfig[];
  bottomRef:RefObject<HTMLDivElement>;
@@ -86,8 +90,8 @@ function Variants({list,onRestore,onClose}:{list:MessageVariant[];onRestore:(id:
 // One row per message. Memoized + markdown parsed once per content string: the whole
 // point of idea #5. `isLast` is a boolean prop (not an identity compare against the
 // parent's `last`) so memo can decide correctly without leaking the array.
-const MessageRow=memo(function MessageRow({m,isLast,busy,variants,providers,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch}:{
- m:Message;isLast:boolean;busy:boolean;variants:MessageVariant[];providers:ProviderConfig[];
+const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,providers,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch}:{
+ m:Message;isLast:boolean;busy:boolean;highlighted?:boolean;variants:MessageVariant[];providers:ProviderConfig[];
  onCopy:(t:string)=>void;onRegenerate:()=>void;onContinue:(id:string)=>void;
  onDeleteMessage:(m:Message)=>void;onEditMessage:(m:Message,text:string)=>void;
  onLoadVariants:(id:string)=>void;onRestoreVariant:(id:string)=>void;
@@ -103,7 +107,7 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,variants,providers,onCo
  // $ estimate from the provider's pricing map; null when the model has no known price.
  const rawCost=m.role==='assistant'?messageCost(providers,m.providerId,m.model,m.promptTokens,m.completionTokens):null;
  const cost=rawCost===null?undefined:formatCost(rawCost);
- return <article className={'message '+m.role}>
+ return <article id={'msg-'+m.id} className={'message '+m.role+(highlighted?' highlighted':'')}>
   <div className="message-avatar">{m.role==='user'?'Y':<Sparkles size={15}/>}</div>
   <div className="message-content">
    <div className="message-heading"><b>{m.role==='user'?'You':'Lumen'}</b>
@@ -146,7 +150,7 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,variants,providers,onCo
  </article>;
 });
 
-export default function MessageList({messages,busy,stream,reasoning,error,variants,providers,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch}:Props){
+export default function MessageList({messages,busy,stream,reasoning,error,status,highlightId,variants,providers,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch}:Props){
  const last=messages[messages.length-1];
  const canRetry=!!last&&last.role==='assistant'&&!busy;
  // The streaming bubble re-parses on a throttle, not per chunk (idea #17).
@@ -157,7 +161,7 @@ export default function MessageList({messages,busy,stream,reasoning,error,varian
    const newDay=!prev||dayStart(prev.createdAt)!==dayStart(m.createdAt);
    return <div key={m.id} className="day-group">
     {newDay&&<div className="date-sep" aria-hidden="true"><span>{dayLabel(m.createdAt)}</span></div>}
-    <MessageRow m={m} isLast={i===messages.length-1} busy={busy} variants={variants[m.id]??NO_VARIANTS} providers={providers}
+    <MessageRow m={m} isLast={i===messages.length-1} busy={busy} highlighted={m.id===highlightId} variants={variants[m.id]??NO_VARIANTS} providers={providers}
      onCopy={onCopy} onRegenerate={onRegenerate} onContinue={onContinue}
      onDeleteMessage={onDeleteMessage} onEditMessage={onEditMessage}
      onLoadVariants={onLoadVariants} onRestoreVariant={onRestoreVariant} onBranch={onBranch}/>
@@ -166,7 +170,7 @@ export default function MessageList({messages,busy,stream,reasoning,error,varian
   {(busy||stream||reasoning)&&<article className="message assistant" aria-live="polite" aria-busy="true">
    <div className="message-avatar"><Sparkles size={15}/></div>
    <div className="message-content">
-    <div className="message-heading"><b>Lumen</b><small>{stream?'Responding':'Thinking'}</small></div>
+    <div className="message-heading"><b>Lumen</b><small>{status??(stream?'Responding':'Thinking')}</small></div>
     <Reasoning key={stream?'answering':'thinking'} text={reasoning} collapsedByDefault={!!stream} live/>
     {stream
      ?<Markdown html={streamHtml}/>

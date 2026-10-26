@@ -15,7 +15,10 @@ export const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'
 export const MAX_IMAGE_ATTACHMENTS = 4;
 // Base64 inflates by ~4/3; the cap applies to DECODED bytes.
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export interface Chat { id: string; title: string; providerId: ProviderId; model: string; updatedAt: number; branchedFrom?: string | null; }
+export interface Chat { id: string; title: string; providerId: ProviderId; model: string; updatedAt: number; branchedFrom?: string | null; pinned?: number; folderId?: string | null; workspace?: string | null; }
+// A user-created grouping for the sidebar. Chats reference it via folder_id;
+// deleting a folder never deletes its chats (they become ungrouped).
+export interface Folder { id: string; name: string; createdAt: number }
 export interface Message { id: string; chatId: string; role: 'user' | 'assistant'; content: string; createdAt: number; model?: string | null; providerId?: ProviderId | null; promptTokens?: number | null; completionTokens?: number | null; reasoning?: string | null; finishReason?: FinishReason; variantCount?: number; attachments?: AttachmentMeta[]; }
 // A superseded assistant answer, kept so Regenerate is not destructive.
 export interface MessageVariant { id: string; messageId: string; content: string; reasoning: string | null; createdAt: number; promptTokens: number | null; completionTokens: number | null; }
@@ -25,7 +28,7 @@ export interface MessageVariant { id: string; messageId: string; content: string
 // `truncateFromMessageId` deletes that message and everything after it as part of
 // THIS request, so an edit-and-resend can never delete the tail and then fail.
 export interface ChatRequest { requestId: string; chatId: string; providerId: ProviderId; model: string; content: string; systemPrompt?: string; temperature?: number; maxTokens?: number; topP?: number; skipUserPersist?: boolean; continueMessageId?: string; regenerateMessageId?: string; truncateFromMessageId?: string; attachments?: NewAttachment[]; }
-export interface ChatChunk { requestId: string; chatId: string; text: string; reasoning?: string; done?: boolean; stopped?: boolean; error?: string; promptTokens?: number; completionTokens?: number; finishReason?: FinishReason; }
+export interface ChatChunk { requestId: string; chatId: string; text: string; reasoning?: string; done?: boolean; stopped?: boolean; error?: string; promptTokens?: number; completionTokens?: number; finishReason?: FinishReason; status?: string; }
 export interface ActiveStream { chatId: string; requestId: string }
 export interface UsageRow { providerId: string | null; model: string | null; messages: number; promptTokens: number; completionTokens: number }
 export interface UsageSummary { messages: number; promptTokens: number; completionTokens: number; byModel: UsageRow[] }
@@ -45,7 +48,8 @@ export interface SettingsData { theme: 'dark' | 'light'; systemPrompt: string; t
 export interface DesktopAPI {
  window: { minimize():void; toggleMaximize():void; close():void };
  app: { version():Promise<string> };
- chats: { list():Promise<Chat[]>; create():Promise<Chat>; rename(id:string,title:string):Promise<void>; delete(id:string):Promise<void>; messages(id:string):Promise<Message[]>; deleteMessage(id:string,chatId:string):Promise<void>; variants(messageId:string):Promise<MessageVariant[]>; restoreVariant(variantId:string):Promise<Message[]>; branch(id:string,messageId:string):Promise<Chat>; usageSummary():Promise<UsageSummary>; export(id:string,format:'md'|'json'):Promise<string|null>; search(query:string):Promise<Array<{chatId:string;title:string;snippet:string}>>; onRenamed(callback:(chat:{id:string;title:string})=>void):()=>void };
+ chats: { list():Promise<Chat[]>; create():Promise<Chat>; rename(id:string,title:string):Promise<void>; delete(id:string):Promise<void>; pin(id:string,pinned:boolean):Promise<void>; setFolder(id:string,folderId:string|null):Promise<void>; pickWorkspace(id:string):Promise<Chat|null>; clearWorkspace(id:string):Promise<void>; messages(id:string):Promise<Message[]>; deleteMessage(id:string,chatId:string):Promise<void>; variants(messageId:string):Promise<MessageVariant[]>; restoreVariant(variantId:string):Promise<Message[]>; branch(id:string,messageId:string):Promise<Chat>; usageSummary():Promise<UsageSummary>; export(id:string,format:'md'|'json'):Promise<string|null>; search(query:string):Promise<Array<{chatId:string;messageId:string;title:string;snippet:string}>>; onRenamed(callback:(chat:{id:string;title:string})=>void):()=>void };
+ folders: { list():Promise<Folder[]>; create(name:string):Promise<Folder>; rename(id:string,name:string):Promise<void>; delete(id:string):Promise<void> };
  providers: { list():Promise<ProviderConfig[]>; save(config:ProviderConfig,key?:string):Promise<void>; remove(id:ProviderId):Promise<void>; models(id:ProviderId):Promise<string[]>; test(id:ProviderId):Promise<{ok:boolean;message:string}> };
  chat: { send(request:ChatRequest):Promise<void>; continueMessage(request:ChatRequest):Promise<void>; regenerate(request:ChatRequest):Promise<void>; stop(requestId?:string):Promise<{stopped:boolean}>; status():Promise<ActiveStream[]>; onChunk(callback:(data:ChatChunk)=>void):()=>void };
  prompt: { enhance(draft:string,providerId:ProviderId,model:string):Promise<string> };

@@ -4,18 +4,24 @@ import { ACCENTS, DEFAULT_HOTKEYS, IMAGE_MIMES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_
 export interface ResolvedProvider { id: string; name: string; url: string; key: string; }
 // `images` are base64 payloads inlined into the provider request (all supported
 // vision APIs take inline images; hosting them would leak them to a third party).
-export interface HistoryMessage { role: string; content: string; images?: { mime: string; data: string }[] }
+// toolCalls/toolResults appear only on in-flight wire messages built by the tool
+// loop in main.ts — they are never persisted to the DB.
+export interface ToolCallRecord { id: string; name: string; args: string }
+export interface ToolResultRecord { toolCallId: string; name: string; content: string }
+export interface HistoryMessage { role: string; content: string; images?: { mime: string; data: string }[]; toolCalls?: ToolCallRecord[]; toolResults?: ToolResultRecord[] }
 export interface ProviderRequest {
  url: string;
  headers: Record<string,string>;
  body: unknown;
 }
+export interface ToolDef { name: string; description: string; schema: Record<string, unknown> }
 export interface RequestParams {
  model: string;
  systemPrompt?: string;
  temperature?: number;
  maxTokens?: number;
  topP?: number;
+ tools?: ToolDef[];
 }
 // Keep the context bounded: recent turns first so long chats cannot overflow the
 // provider context window. The system prompt is added separately per provider.
@@ -150,6 +156,72 @@ export function normalizeFinishReason(value: string | null | undefined): FinishR
   case 'refusal': return 'refusal';
   default: return null;
  }
+}
+
+// ---- workspace tool-call streaming -------------------------------------------
+// A single SSE line can carry several tool events (OpenAI batches deltas), so the
+// parsers return arrays. `call-complete` is for Gemini, which delivers a whole
+// functionCall part in one chunk instead of streaming arguments.
+export type ToolStreamEvent =
+ | { kind: 'call-start'; index: number; id: string; name: string }
+ | { kind: 'call-args'; index: number; chunk: string }
+ | { kind: 'call-complete'; id: string; name: string; args: string }
+ | { kind: 'tool-stop' };
+
+const toolJson = (line: string): Record<string, unknown> | null => {
+ if (!line.startsWith('data:')) return null;
+ const raw = line.slice(5).trim(); if (!raw || raw === '[DONE]') return null;
+ try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; }
+};
+
+// OpenAI-compatible: delta.tool_calls entries are index-keyed fragments — the id and
+// name arrive once (usually the first fragment), arguments stream as chunks. A
+// finish_reason of 'tool_calls' signals the model wants the results back.
+export function parseToolCallDelta(line: string): ToolStreamEvent[] {
+ const obj = toolJson(line); if (!obj) return [];
+ const choice = (obj.choices as Array<{ delta?: { tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }> | undefined)?.[0];
+ const out: ToolStreamEvent[] = [];
+ for (const tc of choice?.delta?.tool_calls ?? []) {
+  const index = typeof tc.index === 'number' ? tc.index : 0;
+  if (tc.id || tc.function?.name) out.push({ kind: 'call-start', index, id: tc.id ?? 'call_' + index, name: tc.function?.name ?? '' });
+  if (tc.function?.arguments) out.push({ kind: 'call-args', index, chunk: tc.function.arguments });
+ }
+ if (choice?.finish_reason === 'tool_calls') out.push({ kind: 'tool-stop' });
+ return out;
+}
+
+// Anthropic: tool_use is its own content block. content_block_start carries id+name,
+// input_json_delta streams the arguments as partial JSON text, and the turn ends
+// with stop_reason 'tool_use' on message_delta.
+export function parseAnthropicToolEvent(line: string): ToolStreamEvent[] {
+ const obj = toolJson(line); if (!obj) return [];
+ const type = obj.type as string | undefined;
+ if (type === 'content_block_start') {
+  const block = obj.content_block as { type?: string; id?: string; name?: string } | undefined;
+  if (block?.type === 'tool_use') return [{ kind: 'call-start', index: typeof obj.index === 'number' ? obj.index : 0, id: block.id ?? '', name: block.name ?? '' }];
+ }
+ if (type === 'content_block_delta') {
+  const delta = obj.delta as { type?: string; partial_json?: string } | undefined;
+  if (delta?.type === 'input_json_delta' && delta.partial_json) return [{ kind: 'call-args', index: typeof obj.index === 'number' ? obj.index : 0, chunk: delta.partial_json }];
+ }
+ if (type === 'message_delta') {
+  const delta = obj.delta as { stop_reason?: string | null } | undefined;
+  if (delta?.stop_reason === 'tool_use') return [{ kind: 'tool-stop' }];
+ }
+ return [];
+}
+
+// Gemini: functionCall arrives as a complete part (args is an object, not text), so
+// each one becomes a whole call. No tool-stop needed — a call part IS the signal.
+export function parseGeminiToolCall(line: string, seq: number): ToolStreamEvent[] {
+ const obj = toolJson(line); if (!obj) return [];
+ const parts = (obj.candidates as Array<{ content?: { parts?: Array<{ functionCall?: { name?: string; args?: unknown } }> } }> | undefined)?.[0]?.content?.parts;
+ const out: ToolStreamEvent[] = [];
+ for (const part of parts ?? []) {
+  if (!part.functionCall?.name) continue;
+  out.push({ kind: 'call-complete', id: 'gemini-call-' + (seq + out.length), name: part.functionCall.name, args: JSON.stringify(part.functionCall.args ?? {}) });
+ }
+ return out;
 }
 
 // Provider base URLs come from settings; an attacker-controlled value must not be
@@ -437,6 +509,8 @@ export function buildModelsRequest(p: ResolvedProvider): { url: string; headers:
 }
 
 export function buildChatRequest(p: ResolvedProvider, history: HistoryMessage[], params: RequestParams): ProviderRequest {
+ // Tool call arguments arrive as a JSON string; providers want parsed objects.
+ const safeJson = (s: string): unknown => { try { return JSON.parse(s); } catch { return {}; } };
  if (p.id === 'anthropic') {
   // Anthropic's documented temperature range is 0.0–1.0, but the shared slider and
   // clamp allow 0–2 (the OpenAI range). Forwarding 1.5 verbatim is a guaranteed
@@ -451,14 +525,19 @@ export function buildChatRequest(p: ResolvedProvider, history: HistoryMessage[],
     temperature,
     top_p: params.topP ?? 1,
     system: params.systemPrompt,
+    ...(params.tools?.length ? { tools: params.tools.map(t => ({ name: t.name, description: t.description, input_schema: t.schema })) } : {}),
     // Anthropic vision: image blocks precede the text block. Plain-text turns keep
     // the string form so non-vision payloads stay byte-identical to before.
-    messages: history.map(m => ({
-     role: m.role === 'assistant' ? 'assistant' : 'user',
-     content: m.images?.length
-      ? [...m.images.map(i => ({ type: 'image', source: { type: 'base64', media_type: i.mime, data: i.data } })), { type: 'text', text: m.content || 'Attached image(s)' }]
-      : m.content,
-    })),
+    messages: history.flatMap((m): unknown[] => {
+     if (m.toolResults) return [{ role: 'user', content: m.toolResults.map(r => ({ type: 'tool_result', tool_use_id: r.toolCallId, content: r.content.slice(0, 100000) })) }];
+     if (m.toolCalls) return [{ role: 'assistant', content: [...(m.content ? [{ type: 'text', text: m.content }] : []), ...m.toolCalls.map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: safeJson(c.args) }))] }];
+     return [{
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.images?.length
+       ? [...m.images.map(i => ({ type: 'image', source: { type: 'base64', media_type: i.mime, data: i.data } })), { type: 'text', text: m.content || 'Attached image(s)' }]
+       : m.content,
+     }];
+    }),
     stream: true,
    },
   };
@@ -477,13 +556,23 @@ export function buildChatRequest(p: ResolvedProvider, history: HistoryMessage[],
    headers: { ...authHeaders(p), 'content-type': 'application/json' },
    body: {
     systemInstruction: params.systemPrompt ? { parts: [{ text: params.systemPrompt }] } : undefined,
+    ...(params.tools?.length ? { tools: [{ functionDeclarations: params.tools.map(t => ({ name: t.name, description: t.description, parameters: t.schema })) }] } : {}),
     // Gemini vision: inlineData parts before the text part.
-    contents: history.map(m => ({
-     role: m.role === 'assistant' ? 'model' : 'user',
-     parts: m.images?.length
-      ? [...m.images.map(i => ({ inlineData: { mimeType: i.mime, data: i.data } })), { text: m.content || 'Attached image(s)' }]
-      : [{ text: m.content }],
-    })),
+    contents: history.flatMap((m): unknown[] => {
+     if (m.toolResults) return [{ role: 'user', parts: m.toolResults.map(r => ({ functionResponse: { name: r.name, response: { result: r.content.slice(0, 100000) } } })) }];
+     if (m.toolCalls) {
+      const parts: unknown[] = [];
+      if (m.content) parts.push({ text: m.content });
+      parts.push(...m.toolCalls.map(c => ({ functionCall: { name: c.name, args: safeJson(c.args) } })));
+      return [{ role: 'model', parts }];
+     }
+     return [{
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: m.images?.length
+       ? [...m.images.map(i => ({ inlineData: { mimeType: i.mime, data: i.data } })), { text: m.content || 'Attached image(s)' }]
+       : [{ text: m.content }],
+     }];
+    }),
     generationConfig: {
      temperature: params.temperature ?? 0.7,
      topP: params.topP ?? 1,
@@ -501,9 +590,14 @@ export function buildChatRequest(p: ResolvedProvider, history: HistoryMessage[],
    model: params.model,
    messages: [...(params.systemPrompt ? [{ role: 'system', content: params.systemPrompt }] : []),
     // OpenAI-compatible vision: content becomes a parts array with image_url data URLs.
-    ...history.map(m => m.images?.length
-     ? { role: m.role, content: [{ type: 'text', text: m.content || 'Attached image(s)' }, ...m.images.map(i => ({ type: 'image_url', image_url: { url: `data:${i.mime};base64,${i.data}` } }))] }
-     : { role: m.role, content: m.content })],
+    ...history.flatMap((m): unknown[] => {
+     if (m.toolResults) return m.toolResults.map(r => ({ role: 'tool', tool_call_id: r.toolCallId, content: r.content.slice(0, 100000) }));
+     if (m.toolCalls) return [{ role: 'assistant', content: m.content || null, tool_calls: m.toolCalls.map(c => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.args } })) }];
+     return [m.images?.length
+      ? { role: m.role, content: [{ type: 'text', text: m.content || 'Attached image(s)' }, ...m.images.map(i => ({ type: 'image_url', image_url: { url: `data:${i.mime};base64,${i.data}` } }))] }
+      : { role: m.role, content: m.content }];
+    })],
+   ...(params.tools?.length ? { tools: params.tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.schema } })) } : {}),
    // o-series / gpt-5 reject temperature and top_p with HTTP 400 and want
    // max_completion_tokens instead of max_tokens.
    ...(reasoning ? {} : { temperature: params.temperature ?? 0.7, top_p: params.topP ?? 1 }),

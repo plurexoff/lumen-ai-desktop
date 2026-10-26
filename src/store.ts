@@ -19,6 +19,9 @@ export interface StreamState{
  error:string;
  finishReason:FinishReason;
  usage:{promptTokens:number;completionTokens:number}|null;
+ // What the model is doing between text chunks (e.g. "Running read_file…") while
+ // workspace tools execute. Cleared by the next status chunk or stream end.
+ status?:string;
 }
 
 export interface State{

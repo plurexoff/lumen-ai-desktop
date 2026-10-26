@@ -7,6 +7,10 @@ const api:DesktopAPI={
   list:()=>ipcRenderer.invoke('chats:list'),
   create:()=>ipcRenderer.invoke('chats:create'),
   rename:(id,title)=>ipcRenderer.invoke('chats:rename',id,title),
+  pin:(id,pinned)=>ipcRenderer.invoke('chats:pin',id,pinned),
+  setFolder:(id,folderId)=>ipcRenderer.invoke('chats:set-folder',id,folderId),
+  pickWorkspace:id=>ipcRenderer.invoke('chats:pick-workspace',id),
+  clearWorkspace:id=>ipcRenderer.invoke('chats:clear-workspace',id),
   delete:id=>ipcRenderer.invoke('chats:delete',id),
   messages:id=>ipcRenderer.invoke('chats:messages',id),
   deleteMessage:(id,chatId)=>ipcRenderer.invoke('chats:delete-message',id,chatId),
@@ -35,6 +39,12 @@ const api:DesktopAPI={
  },
  prompt:{
   enhance:(draft,providerId,model)=>ipcRenderer.invoke('prompt:enhance',draft,providerId,model),
+ },
+ folders:{
+  list:()=>ipcRenderer.invoke('folders:list'),
+  create:name=>ipcRenderer.invoke('folders:create',name),
+  rename:(id,name)=>ipcRenderer.invoke('folders:rename',id,name),
+  delete:id=>ipcRenderer.invoke('folders:delete',id),
  },
  data:{
   health:()=>ipcRenderer.invoke('data:health'),

@@ -10,6 +10,7 @@ import {
  isValidHotkey,normalizeHotkeys,validatePersonas,cleanTitle,
  validatePricing,cleanEnhanced,DEFAULT_PRICING,ENHANCE_PROMPT,
  buildModelsRequest,buildChatRequest,type ResolvedProvider,
+ parseToolCallDelta,parseAnthropicToolEvent,parseGeminiToolCall,
 } from '../electron/providers';
 import type {ProviderId} from '../electron/shared';
 import {DEFAULT_HOTKEYS,MAX_ATTACHMENT_BYTES,MAX_IMAGE_ATTACHMENTS} from '../electron/shared';
@@ -489,6 +490,74 @@ describe('enhance prompt',()=>{
   expect(cleanEnhanced('  draft  ','draft')).toBe('');
   expect(cleanEnhanced(null,'draft')).toBe('');
   expect(cleanEnhanced('x'.repeat(32769),'draft')).toBe('');
+ });
+});
+
+describe('tool-call streaming parsers',()=>{
+ it('reads OpenAI tool-call deltas: start, argument chunks, tool_calls finish',()=>{
+  expect(parseToolCallDelta('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file"}}]}}]}'))
+   .toEqual([{kind:'call-start',index:0,id:'call_1',name:'read_file'}]);
+  expect(parseToolCallDelta('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":"}}]}}]}'))
+   .toEqual([{kind:'call-args',index:0,chunk:'{"path":'}]);
+  expect(parseToolCallDelta('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'))
+   .toEqual([{kind:'tool-stop'}]);
+ });
+ it('ignores non-tool OpenAI events and malformed lines',()=>{
+  expect(parseToolCallDelta('data: {"choices":[{"delta":{"content":"hi"}}]}')).toEqual([]);
+  expect(parseToolCallDelta('data: {')).toEqual([]);
+  expect(parseToolCallDelta('data: [DONE]')).toEqual([]);
+ });
+ it('reads Anthropic tool_use blocks and the tool_use stop reason',()=>{
+  expect(parseAnthropicToolEvent('data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"write_file"}}'))
+   .toEqual([{kind:'call-start',index:1,id:'toolu_1',name:'write_file'}]);
+  expect(parseAnthropicToolEvent('data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"a\\"}"}}'))
+   .toEqual([{kind:'call-args',index:1,chunk:'{"path":"a"}'}]);
+  expect(parseAnthropicToolEvent('data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}'))
+   .toEqual([{kind:'tool-stop'}]);
+  // Text deltas and other stop reasons are not tool events.
+  expect(parseAnthropicToolEvent('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}')).toEqual([]);
+  expect(parseAnthropicToolEvent('data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}')).toEqual([]);
+ });
+ it('reads Gemini functionCall parts as complete calls with sequential ids',()=>{
+  expect(parseGeminiToolCall('data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"list_files","args":{}}}]}}]}',0))
+   .toEqual([{kind:'call-complete',id:'gemini-call-0',name:'list_files',args:'{}'}]);
+  expect(parseGeminiToolCall('data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}',3)).toEqual([]);
+ });
+});
+
+describe('tool-aware request bodies',()=>{
+ const tools=[{name:'read_file',description:'Read a file',schema:{type:'object',properties:{path:{type:'string'}},required:['path']}}];
+ it('maps tools and tool turns into the OpenAI-compatible shape',()=>{
+  const body=buildChatRequest(openai,[
+   {role:'user',content:'read a.txt'},
+   {role:'assistant',content:'',toolCalls:[{id:'call_1',name:'read_file',args:'{"path":"a.txt"}'}]},
+   {role:'user',content:'',toolResults:[{toolCallId:'call_1',name:'read_file',content:'hello'}]},
+  ],{model:'gpt-4o',tools}).body as {tools?:unknown[];messages:Array<Record<string,unknown>>};
+  expect(body.tools).toEqual([{type:'function',function:{name:'read_file',description:'Read a file',parameters:tools[0].schema}}]);
+  expect(body.messages[1]).toEqual({role:'assistant',content:null,tool_calls:[{id:'call_1',type:'function',function:{name:'read_file',arguments:'{"path":"a.txt"}'}}]});
+  expect(body.messages[2]).toEqual({role:'tool',tool_call_id:'call_1',content:'hello'});
+ });
+ it('maps tools and tool turns into the Anthropic shape',()=>{
+  const body=buildChatRequest(anthropic,[
+   {role:'assistant',content:'checking',toolCalls:[{id:'toolu_1',name:'read_file',args:'{"path":"a.txt"}'}]},
+   {role:'user',content:'',toolResults:[{toolCallId:'toolu_1',name:'read_file',content:'hello'}]},
+  ],{model:'claude-sonnet-4-5',tools}).body as {tools?:unknown[];messages:Array<Record<string,unknown>>};
+  expect(body.tools).toEqual([{name:'read_file',description:'Read a file',input_schema:tools[0].schema}]);
+  expect(body.messages[0]).toEqual({role:'assistant',content:[{type:'text',text:'checking'},{type:'tool_use',id:'toolu_1',name:'read_file',input:{path:'a.txt'}}]});
+  expect(body.messages[1]).toEqual({role:'user',content:[{type:'tool_result',tool_use_id:'toolu_1',content:'hello'}]});
+ });
+ it('maps tools and tool turns into the Gemini shape',()=>{
+  const body=buildChatRequest(gemini,[
+   {role:'assistant',content:'',toolCalls:[{id:'gemini-call-0',name:'list_files',args:'{}'}]},
+   {role:'user',content:'',toolResults:[{toolCallId:'gemini-call-0',name:'list_files',content:'a.txt'}]},
+  ],{model:'gemini-2.0-flash',tools}).body as {tools?:unknown[];contents:Array<{role:string;parts:unknown[]}>};
+  expect(body.tools).toEqual([{functionDeclarations:[{name:'read_file',description:'Read a file',parameters:tools[0].schema}]}]);
+  expect(body.contents[0]).toEqual({role:'model',parts:[{functionCall:{name:'list_files',args:{}}}]});
+  expect(body.contents[1]).toEqual({role:'user',parts:[{functionResponse:{name:'list_files',response:{result:'a.txt'}}}]});
+ });
+ it('omits tool fields entirely when no tools are passed',()=>{
+  const body=buildChatRequest(openai,[{role:'user',content:'hi'}],{model:'gpt-4o'}).body as Record<string,unknown>;
+  expect('tools' in body).toBe(false);
  });
 });
 

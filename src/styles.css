@@ -244,3 +244,25 @@ html{background:#0c0d10}body{font-size:13px;line-height:1.4}.titlebar{font-size:
 .queue-chip button:hover{color:var(--text);background:var(--line)}
 .enhance-btn.spinning svg{animation:spin 1s linear infinite}
 .enhance-btn:disabled{opacity:.4;cursor:default}
+
+/* --- v1.6 additions: pinned chats, folders, search jump, workspace tools --- */
+.folder-section{margin:0 0 2px}
+.folder-header{display:flex;align-items:center;gap:2px;padding:1px 6px 1px 2px;border-radius:5px}
+.folder-header .chat-actions{opacity:0}
+.folder-header:hover .chat-actions{opacity:1}
+.folder-header .chat-actions button{display:grid;place-items:center;width:20px;height:20px;border:0;border-radius:4px;background:transparent;color:var(--muted);cursor:pointer}
+.folder-header .chat-actions button:hover{color:var(--text);background:var(--line)}
+.folder-toggle{display:flex;align-items:center;gap:6px;flex:1;min-width:0;border:0;background:transparent;color:var(--muted);font-size:11px;padding:5px 4px;cursor:pointer;text-align:left}
+.folder-toggle:hover{color:var(--text)}
+.folder-toggle span{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.folder-toggle i{font-style:normal;font-size:10px;color:var(--faint)}
+.folder-section .chat-row{padding-left:14px}
+.folder-empty{padding:3px 0 6px 30px;color:var(--faint);font-size:10px}
+.drop-target,.drop-target .folder-toggle{background:var(--accent-dim,#8c75c522);border-radius:5px}
+.drop-target-root{outline:1px dashed var(--accent);outline-offset:-1px;border-radius:5px}
+.folder-add{display:flex;align-items:center;gap:6px;margin:4px 6px 8px;padding:5px 8px;border:1px dashed var(--line);border-radius:6px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer;width:calc(100% - 12px)}
+.folder-add:hover{color:var(--text);border-color:var(--accent)}
+.folder-rename{margin:2px 6px}
+.message.highlighted{animation:hit-flash 2.4s ease-out}
+@keyframes hit-flash{0%{background:var(--accent-dim,#8c75c533);box-shadow:0 0 0 1px var(--accent)}100%{background:transparent;box-shadow:none}}
+.branch-link.workspace-on{color:var(--accent);border-color:var(--accent)}

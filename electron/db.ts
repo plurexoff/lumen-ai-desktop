@@ -6,7 +6,7 @@ let db:Database;let filePath:string;let saveTimer:NodeJS.Timeout|null=null;
 const SAVE_DEBOUNCE_MS=250;
 // Bumped whenever the schema changes; stored in `PRAGMA user_version` so an old
 // install can be migrated forward and a too-new file can be refused outright.
-export const SCHEMA_VERSION=4;
+export const SCHEMA_VERSION=5;
 
 export interface DbStatus{recovered:boolean;backupPath:string|null;newerVersion:number|null;}
 let status:DbStatus={recovered:false,backupPath:null,newerVersion:null};
@@ -48,7 +48,7 @@ export async function openDatabase(){
 }
 
 function createSchema(){
- db.run('CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY,title TEXT NOT NULL,provider_id TEXT NOT NULL,model TEXT NOT NULL,updated_at INTEGER NOT NULL,branched_from TEXT)');
+ db.run('CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY,title TEXT NOT NULL,provider_id TEXT NOT NULL,model TEXT NOT NULL,updated_at INTEGER NOT NULL,branched_from TEXT,pinned INTEGER NOT NULL DEFAULT 0,folder_id TEXT,workspace TEXT)');
  db.run('CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,role TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL)');
  db.run("CREATE TABLE IF NOT EXISTS providers(id TEXT PRIMARY KEY,name TEXT NOT NULL,base_url TEXT NOT NULL,models TEXT NOT NULL,headers TEXT NOT NULL DEFAULT '{}')");
  db.run('CREATE TABLE IF NOT EXISTS secrets(id TEXT PRIMARY KEY,value BLOB NOT NULL)');
@@ -85,6 +85,14 @@ function migrate(from:number){
  if(from<4){
   // v4: branch lineage, so a forked chat can link back to its source.
   ensureColumn('chats','branched_from','TEXT');
+ }
+ if(from<5){
+  // v5: sidebar organization (pin, folders) and a per-chat workspace folder that
+  // enables the model's file tools. Deleting a folder never deletes chats.
+  ensureColumn('chats','pinned','INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('chats','folder_id','TEXT');
+  ensureColumn('chats','workspace','TEXT');
+  db.run('CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY,name TEXT NOT NULL,created_at INTEGER NOT NULL)');
  }
  db.run(`PRAGMA user_version=${SCHEMA_VERSION}`);
 }

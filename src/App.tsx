@@ -1,8 +1,8 @@
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
-import {AlertTriangle,GitFork,PanelLeftClose,Settings,Shield} from 'lucide-react';
+import {AlertTriangle,FolderOpen,GitFork,PanelLeftClose,Settings,Shield,X} from 'lucide-react';
 import {useApp} from './store';
 import type {PendingImage,Prefs,State,StreamState} from './store';
-import type {Chat,ChatChunk,Message,MessageVariant,ProviderConfig,ProviderId} from '../electron/shared';
+import type {Chat,ChatChunk,Folder,Message,MessageVariant,ProviderConfig,ProviderId} from '../electron/shared';
 import {IMAGE_MIMES,MAX_ATTACHMENT_BYTES,MAX_IMAGE_ATTACHMENTS} from '../electron/shared';
 import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
@@ -77,6 +77,9 @@ export default function App(){
  // Sent prompts for ArrowUp recall in the composer (session-only, newest last).
  const [history,setHistory]=useState<string[]>([]);
  const historyRef=useRef(history);
+ // Sidebar folders and the search-jump highlight target.
+ const [folders,setFolders]=useState<Folder[]>([]);
+ const [highlightId,setHighlightId]=useState('');
  // Messages typed while a chat was still generating, keyed by chatId. Drained one
  // at a time by the queue-flush effect below when that chat's stream settles.
  const [queues,setQueues]=useState<Record<string,string[]>>({});
@@ -339,6 +342,55 @@ export default function App(){
   await window.lumen.chats.rename(id,title);set({chats:await window.lumen.chats.list()});
  },[set]);
 
+ const togglePin=useCallback(async(chat:Chat)=>{
+  await window.lumen.chats.pin(chat.id,!chat.pinned);set({chats:await window.lumen.chats.list()});
+ },[set]);
+
+ const moveToFolder=useCallback(async(chatId:string,folderId:string|null)=>{
+  await window.lumen.chats.setFolder(chatId,folderId);set({chats:await window.lumen.chats.list()});
+ },[set]);
+
+ const createFolder=useCallback(async(name:string)=>{
+  await window.lumen.folders.create(name);setFolders(await window.lumen.folders.list());
+ },[]);
+
+ const renameFolder=useCallback(async(id:string,name:string)=>{
+  await window.lumen.folders.rename(id,name);setFolders(await window.lumen.folders.list());
+ },[]);
+
+ const deleteFolder=useCallback(async(id:string)=>{
+  await window.lumen.folders.delete(id);
+  setFolders(await window.lumen.folders.list());
+  set({chats:await window.lumen.chats.list()});
+ },[set]);
+
+ // Search jump: open the chat (if needed), load its messages, then scroll the hit
+ // into view with a brief highlight so the eye lands on the matched message.
+ const openChatAt=useCallback(async(chatId:string,messageId:string)=>{
+  const s=useApp.getState();const chat=s.chats.find(c=>c.id===chatId);if(!chat)return;
+  if(chatId!==s.activeId){set({activeId:chat.id,providerId:chat.providerId,model:chat.model});setVariants({});}
+  await load(chat.id);
+  setHighlightId(messageId);
+  requestAnimationFrame(()=>{document.getElementById('msg-'+messageId)?.scrollIntoView({block:'center'});});
+  window.setTimeout(()=>setHighlightId(''),2600);
+ },[load,set]);
+
+ // The workspace folder enables file tools for this chat (reads are automatic,
+ // writes ask first). pickWorkspace shows a native folder dialog in main.
+ const pickWorkspace=useCallback(async()=>{
+  const id=useApp.getState().activeId;if(!id)return;
+  try{
+   const updated=await window.lumen.chats.pickWorkspace(id);
+   if(updated){set({chats:useApp.getState().chats.map(c=>c.id===id?updated:c)});flash('Workspace: '+updated.workspace);}
+  }catch(e){flash(e instanceof Error?e.message:'Could not set the workspace');}
+ },[flash,set]);
+
+ const clearWorkspace=useCallback(async()=>{
+  const id=useApp.getState().activeId;if(!id)return;
+  await window.lumen.chats.clearWorkspace(id);
+  set({chats:useApp.getState().chats.map(c=>c.id===id?{...c,workspace:null}:c)});
+ },[set]);
+
  const pref=useCallback(async<K extends keyof Prefs>(key:K,value:Prefs[K])=>{
   const s=useApp.getState().settings;set({settings:{...s,[key]:value}});
   try{await window.lumen.settings.save({[key]:value});}catch{flash('Could not save that preference');}
@@ -474,6 +526,11 @@ export default function App(){
   const schedule=()=>{if(!frame)frame=requestAnimationFrame(flush);};
   return window.lumen.chat.onChunk(d=>{
    const s=useApp.getState();const cur=s.streams[d.chatId];
+   // Status chunks (tool activity) bypass the batched text pipeline — they are
+   // rare, and the heading should react immediately.
+   if(cur&&cur.requestId===d.requestId&&d.status!==undefined){
+    set({streams:{...useApp.getState().streams,[d.chatId]:{...cur,status:d.status||undefined}}});
+   }
    // Matched by chatId only. Filtering on activeId here was the bug that left the app
    // stuck in busy forever after switching chats mid-generation.
    if(cur&&cur.requestId===d.requestId&&(d.text||d.reasoning)){
@@ -487,13 +544,14 @@ export default function App(){
 
  // ---- initial load + reconnect to generations that outlived a renderer reload
  useEffect(()=>{
-  void Promise.all([window.lumen.chats.list(),window.lumen.providers.list(),window.lumen.settings.get(),window.lumen.chat.status()])
-   .then(([cs,ps,prefs,active])=>{
+  void Promise.all([window.lumen.chats.list(),window.lumen.providers.list(),window.lumen.settings.get(),window.lumen.chat.status(),window.lumen.folders.list()])
+   .then(([cs,ps,prefs,active,fs2])=>{
     const initial=cs[0];
     const streams:Record<string,StreamState>={};
     for(const a of active)streams[a.chatId]=newStream(a.requestId);
     set({chats:cs,providers:ps,settings:prefs,streams,
      ...(initial?{activeId:initial.id,providerId:initial.providerId,model:initial.model}:ps[0]?{providerId:ps[0].id,model:ps[0].models[0]??''}:{})});
+    setFolders(fs2);
     if(initial)void load(initial.id);
     void checkHealth();
    })
@@ -531,9 +589,12 @@ export default function App(){
  return <div className="app-shell" data-theme={settings.theme} data-accent={settings.accent}>
   <Titlebar busy={anyBusy}/>
   <div className="layout">
-   {showSidebar&&<Sidebar chats={chats} activeId={activeId} providers={providers} busyIds={busyIds} needsSetup={needsSetup}
+   {showSidebar&&<Sidebar chats={chats} activeId={activeId} providers={providers} folders={folders} busyIds={busyIds} needsSetup={needsSetup}
      newChatHotkey={settings.hotkeys.newChat}
-     onNew={newChatAndFocus} onOpen={openChat} onDelete={removeChat} onRename={renameChat} onOpenSettings={openProvidersTab}/>}
+     onNew={newChatAndFocus} onOpen={openChat} onDelete={removeChat} onRename={renameChat} onOpenSettings={openProvidersTab}
+     onTogglePin={togglePin} onMoveFolder={moveToFolder}
+     onCreateFolder={createFolder} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder}
+     onOpenHit={openChatAt}/>}
    <main className="main-panel">
     {persistError&&<div className="persist-error" role="alert">
      <AlertTriangle size={14}/>
@@ -552,6 +613,12 @@ export default function App(){
        <option value="">{chats.filter(c=>c.branchedFrom===active.id).length} {chats.filter(c=>c.branchedFrom===active.id).length===1?'branch':'branches'}</option>
        {chats.filter(c=>c.branchedFrom===active.id).map(c=><option key={c.id} value={c.id}>{c.title}</option>)}
       </select>}
+      {/* Workspace: the model gets file tools inside this folder (writes ask first). */}
+      {active&&<button className={'branch-link'+(active.workspace?' workspace-on':'')}
+       title={active.workspace?active.workspace+' — the model can list, read and search files here; writes need your approval. Click to change.':'Attach a workspace folder — the model can list, read and search files in it; writes need your approval'}
+       onClick={()=>void pickWorkspace()}>
+       <FolderOpen size={12}/>{active.workspace?active.workspace.split(/[\\/]/).filter(Boolean).pop():'Workspace'}</button>}
+      {active?.workspace&&<button className="icon-btn" aria-label="Detach workspace folder" title="Detach workspace" onClick={()=>void clearWorkspace()}><X size={12}/></button>}
      </div>
      <div className="toolbar-right"><span className="private-label"><Shield size={13}/>Private by design</span>
       <button className="icon-btn" aria-label="Settings" onClick={openProvidersTab}><Settings size={16}/></button>
@@ -561,6 +628,7 @@ export default function App(){
      {messages.length===0&&!stream&&!busy
       ?<Welcome needsSetup={needsSetup} onSetup={openProvidersTab} onPick={pickSuggestion}/>
       :<MessageList messages={messages} busy={busy} stream={stream?.text??''} reasoning={stream?.reasoning??''} error={error}
+        status={stream?.status} highlightId={highlightId}
         variants={variants} providers={providers} bottomRef={bottom} onCopy={copy} onRegenerate={regenerate}
         onContinue={continueMessage} onDeleteMessage={deleteMessage} onEditMessage={commitEdit} onRetry={regenerate}
         onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat}/>}

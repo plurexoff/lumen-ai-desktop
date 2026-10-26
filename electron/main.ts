@@ -7,10 +7,12 @@ import {
  parseSseEvent, parseReasoningEvent, parseUsageEvent, parseAnthropicUsage, parseFinishReason, parseAnthropicFinish,
  validateProviderUrl, isSafeExternalUrl, isLoopbackUrl, buildModelsRequest, buildChatRequest, trimHistory, normalizeHistory,
  validateProviderConfig, validateChatRequest, clampSettings, isKnownProviderId, normalizeHotkeys, authHeaders, TITLE_PROMPT, cleanTitle, stripGeminiModelPrefix, ENHANCE_PROMPT, cleanEnhanced, DEFAULT_PRICING,
- type ResolvedProvider, type HistoryMessage,
+ parseToolCallDelta, parseAnthropicToolEvent, parseGeminiToolCall,
+ type ResolvedProvider, type HistoryMessage, type ToolCallRecord,
 } from './providers';
+import { TOOL_DEFS, WORKSPACE_PROMPT, MAX_TOOL_ROUNDS, runToolCall } from './tools';
 import { randomUUID } from 'node:crypto';
-import type { ProviderConfig, ProviderId, FinishReason, ActiveStream, UsageRow, UsageSummary } from './shared';
+import type { ProviderConfig, ProviderId, FinishReason, ActiveStream, UsageRow, UsageSummary, Folder } from './shared';
 
 // Lightweight structured logging: main-process failures were previously invisible.
 function log(...args: unknown[]) { console.log('[lumen]', ...args); }
@@ -233,9 +235,38 @@ function listMessages(chatId:string){
 function initIpc(){
  ipcMain.on('window:minimize',()=>win.minimize());ipcMain.on('window:toggle-maximize',()=>win.isMaximized()?win.unmaximize():win.maximize());ipcMain.on('window:close',()=>win.close());
  ipcMain.handle('app:version',()=>app.getVersion());
- ipcMain.handle('chats:list',()=>query('SELECT id,title,provider_id as providerId,model,updated_at as updatedAt,branched_from as branchedFrom FROM chats ORDER BY updated_at DESC'));
+ ipcMain.handle('chats:list',()=>query('SELECT id,title,provider_id as providerId,model,updated_at as updatedAt,branched_from as branchedFrom,pinned,folder_id as folderId,workspace FROM chats ORDER BY pinned DESC, updated_at DESC'));
  ipcMain.handle('chats:create',()=>{const id=randomUUID(),updatedAt=Date.now();run('INSERT INTO chats(id,title,provider_id,model,updated_at) VALUES(?,?,?,?,?)',[id,'New conversation','openai','gpt-4o-mini',updatedAt]);return{id,title:'New conversation',providerId:'openai',model:'gpt-4o-mini',updatedAt};});
  ipcMain.handle('chats:rename',(_e,id:string,title:string)=>{if(typeof id!=='string'||typeof title!=='string')return;const clean=title.trim().slice(0,100);if(!clean)return;run('UPDATE chats SET title=?,updated_at=? WHERE id=?',[clean,Date.now(),id]);});
+ // Pin toggles ordering only — deliberately does not bump updated_at.
+ ipcMain.handle('chats:pin',(_e,id:string,pinned:boolean)=>{if(typeof id!=='string')return;run('UPDATE chats SET pinned=? WHERE id=?',[pinned?1:0,id]);});
+ ipcMain.handle('chats:set-folder',(_e,id:string,folderId:string|null)=>{if(typeof id!=='string')return;
+  if(folderId!==null&&(typeof folderId!=='string'||!one('SELECT id FROM folders WHERE id=?',[folderId])))return;
+  run('UPDATE chats SET folder_id=? WHERE id=?',[folderId,id]);});
+ // The workspace folder enables the model's file tools for this chat. The picker
+ // dialog lives in main so the renderer never sees a filesystem path it didn't
+ // explicitly ask the user for.
+ ipcMain.handle('chats:pick-workspace',async(_e,id:string)=>{
+  if(typeof id!=='string')return null;
+  const result=await dialog.showOpenDialog(win,{title:'Choose a workspace folder',properties:['openDirectory','createDirectory']});
+  if(result.canceled||!result.filePaths[0])return null;
+  const folder=path.resolve(result.filePaths[0]);
+  run('UPDATE chats SET workspace=? WHERE id=?',[folder,id]);
+  return one('SELECT id,title,provider_id as providerId,model,updated_at as updatedAt,branched_from as branchedFrom,pinned,folder_id as folderId,workspace FROM chats WHERE id=?',[id]);
+ });
+ ipcMain.handle('chats:clear-workspace',(_e,id:string)=>{if(typeof id!=='string')return;run('UPDATE chats SET workspace=NULL WHERE id=?',[id]);});
+ ipcMain.handle('folders:list',()=>query('SELECT id,name,created_at as createdAt FROM folders ORDER BY created_at'));
+ ipcMain.handle('folders:create',(_e,name:string)=>{
+  if(typeof name!=='string')throw new Error('Invalid folder name');
+  const clean=name.trim().slice(0,60);if(!clean)throw new Error('Invalid folder name');
+  const folder:Folder={id:randomUUID(),name:clean,createdAt:Date.now()};
+  run('INSERT INTO folders VALUES(?,?,?)',[folder.id,folder.name,folder.createdAt]);
+  return folder;
+ });
+ ipcMain.handle('folders:rename',(_e,id:string,name:string)=>{if(typeof id!=='string'||typeof name!=='string')return;const clean=name.trim().slice(0,60);if(!clean)return;run('UPDATE folders SET name=? WHERE id=?',[clean,id]);});
+ // Deleting a folder never deletes its chats — they fall back to the ungrouped list.
+ ipcMain.handle('folders:delete',(_e,id:string)=>{if(typeof id!=='string')return;
+  transaction(()=>{run('UPDATE chats SET folder_id=NULL WHERE folder_id=?',[id]);run('DELETE FROM folders WHERE id=?',[id]);});});
  // Delete children explicitly instead of relying on ON DELETE CASCADE: sql.js resets
  // the foreign_keys pragma on every export() (see db.flush), so a cascade can silently
  // not fire and leave the whole conversation text on disk after the user "permanently
@@ -280,7 +311,7 @@ function initIpc(){
  // alone — later edits in either chat never affect the other.
  ipcMain.handle('chats:branch',(_e,chatId:string,messageId:string)=>{
   if(typeof chatId!=='string'||typeof messageId!=='string')throw new Error('Invalid branch request');
-  const chat=one('SELECT title,provider_id,model FROM chats WHERE id=?',[chatId]) as {title:string;provider_id:string;model:string}|undefined;
+  const chat=one('SELECT title,provider_id,model,folder_id,workspace FROM chats WHERE id=?',[chatId]) as {title:string;provider_id:string;model:string;folder_id:string|null;workspace:string|null}|undefined;
   const cut=one('SELECT created_at FROM messages WHERE id=? AND chat_id=?',[messageId,chatId]) as {created_at:number}|undefined;
   if(!chat||!cut)throw new Error('Nothing to branch from');
   const id=randomUUID(),now=Date.now(),title=chat.title.slice(0,92)+' (branch)';
@@ -288,7 +319,7 @@ function initIpc(){
   const variants=query('SELECT v.* FROM message_variants v JOIN messages m ON m.id=v.message_id WHERE m.chat_id=? AND m.created_at<=?',[chatId,cut.created_at]) as Array<Record<string,unknown>&{message_id:string}>;
   const idMap=new Map<string,string>();
   transaction(()=>{
-   run('INSERT INTO chats(id,title,provider_id,model,updated_at,branched_from) VALUES(?,?,?,?,?,?)',[id,title,chat.provider_id,chat.model,now,chatId]);
+   run('INSERT INTO chats(id,title,provider_id,model,updated_at,branched_from,folder_id,workspace) VALUES(?,?,?,?,?,?,?,?)',[id,title,chat.provider_id,chat.model,now,chatId,chat.folder_id,chat.workspace]);
    for(const m of msgs){
     const nid=randomUUID();idMap.set(m.id,nid);
     run('INSERT INTO messages(id,chat_id,role,content,created_at,model,provider_id,prompt_tokens,completion_tokens,reasoning,finish_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
@@ -306,7 +337,7 @@ function initIpc(){
     run('INSERT INTO message_variants VALUES(?,?,?,?,?,?,?)',[randomUUID(),nid,v.content,v.reasoning??null,v.created_at,v.prompt_tokens??null,v.completion_tokens??null]);
    }
   });
-  return {id,title,providerId:chat.provider_id,model:chat.model,updatedAt:now,branchedFrom:chatId};
+  return {id,title,providerId:chat.provider_id,model:chat.model,updatedAt:now,branchedFrom:chatId,folderId:chat.folder_id,workspace:chat.workspace};
  });
  ipcMain.handle('chats:usage-summary',()=>{
   // JOIN chats so messages orphaned by pre-fix deletes (cascades silently not firing
@@ -323,10 +354,11 @@ function initIpc(){
   const term=q.trim();if(!term||term.length>200)return[];
   // Escape LIKE wildcards so a literal "%" or "_" in the query is not a pattern.
   const like='%'+term.replace(/[\\%_]/g,m=>'\\'+m)+'%';
-  const rows=query("SELECT m.chat_id as chatId,c.title as title,m.content as content,m.created_at as createdAt FROM messages m JOIN chats c ON c.id=m.chat_id WHERE m.content LIKE ? ESCAPE '\\' ORDER BY m.created_at DESC LIMIT 50",[like]) as Array<{chatId:string;title:string;content:string;createdAt:number}>;
+  const rows=query("SELECT m.id as messageId,m.chat_id as chatId,c.title as title,m.content as content,m.created_at as createdAt FROM messages m JOIN chats c ON c.id=m.chat_id WHERE m.content LIKE ? ESCAPE '\\' ORDER BY m.created_at DESC LIMIT 50",[like]) as Array<{messageId:string;chatId:string;title:string;content:string;createdAt:number}>;
   const needle=term.toLowerCase();
   // Only the surrounding snippet crosses the IPC boundary, not whole messages.
-  return rows.map(({chatId,title,content})=>{const idx=content.toLowerCase().indexOf(needle);return{chatId,title,snippet:idx<0?content.slice(0,160):content.slice(Math.max(0,idx-60),idx+term.length+100)};});
+  // messageId lets the renderer scroll straight to the hit and highlight it.
+  return rows.map(({messageId,chatId,title,content})=>{const idx=content.toLowerCase().indexOf(needle);return{messageId,chatId,title,snippet:idx<0?content.slice(0,160):content.slice(Math.max(0,idx-60),idx+term.length+100)};});
  });
  ipcMain.handle('chats:export',async(_e,id:string,format:'md'|'json')=>{
   if(typeof id!=='string'||(format!=='md'&&format!=='json'))return null;
@@ -366,7 +398,7 @@ function initIpc(){
  ipcMain.handle('chat:continue',(_e,r:unknown)=>generate(r,'continue'));
  ipcMain.handle('chat:regenerate',(_e,r:unknown)=>generate(r,'regenerate'));
  ipcMain.handle('data:health',()=>({ok:!lastPersistError(),persistError:lastPersistError()}));
- ipcMain.handle('data:wipe',()=>{transaction(()=>{run('DELETE FROM attachments');run('DELETE FROM message_variants');run('DELETE FROM messages');run('DELETE FROM chats');run("DELETE FROM settings WHERE key!='windowBounds'");});saveNow();try{fs.rmSync(attachmentsDir(),{recursive:true,force:true});}catch{}});
+ ipcMain.handle('data:wipe',()=>{transaction(()=>{run('DELETE FROM attachments');run('DELETE FROM message_variants');run('DELETE FROM messages');run('DELETE FROM chats');run('DELETE FROM folders');run("DELETE FROM settings WHERE key!='windowBounds'");});saveNow();try{fs.rmSync(attachmentsDir(),{recursive:true,force:true});}catch{}});
  ipcMain.handle('data:open-folder',()=>shell.openPath(app.getPath('userData')));
 }
 function getProvider(id:ProviderId):ResolvedProvider{const p=one('SELECT * FROM providers WHERE id=?',[id]) as {id:string;name:string;base_url:string}|undefined;if(!p)throw new Error('Provider not configured');const secret=one('SELECT value FROM secrets WHERE id=?',[id]) as {value:Buffer}|undefined;let key='';if(secret){try{key=safeStorage.decryptString(secret.value);}catch{throw new Error('Saved API key could not be decrypted on this device. Re-enter it in Settings.');}}else if(!isLoopbackUrl(p.base_url))throw new Error('Add an API key for '+p.name+' in Settings');return{id:p.id as ProviderId,name:p.name,url:p.base_url.replace(/\/$/,''),key};}
@@ -447,11 +479,71 @@ async function generate(raw:unknown,mode:GenMode){
  const armWatchdog=()=>{if(watchdog)clearTimeout(watchdog);watchdog=setTimeout(()=>{timedOut=true;controller.abort();},STREAM_IDLE_MS);};
  try{
   armWatchdog();
-  const{url,headers,body}=buildChatRequest(p,history,{model:r.model,systemPrompt:r.systemPrompt,temperature:r.temperature,maxTokens:r.maxTokens,topP:r.topP});
-  const response=await fetch(url,{method:'POST',headers,body:JSON.stringify(body),signal});
-  if(!response.ok){const detail=(await response.text()).slice(0,240);throw new Error(response.status===401?'Invalid API key (401)':response.status===403?'Access denied by provider (403): '+detail:response.status===429?'Rate limit reached (429): '+detail:'Provider error '+response.status+': '+detail);}
-  if(!response.body)throw new Error('Streaming unavailable');
-  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const result=await reader.read();if(result.done)break;armWatchdog();buffer+=decoder.decode(result.value,{stream:true});const lines=buffer.split(/\r?\n/);buffer=lines.pop()??'';for(const line of lines){const text=parseSseEvent(line);const thought=parseReasoningEvent(line);const fin=p.id==='anthropic'?parseAnthropicFinish(line):parseFinishReason(line);if(fin)finish=fin;if(p.id==='anthropic')usage=parseAnthropicUsage(line,usage);else usage=parseUsageEvent(line)??usage;if(text){answer+=text;toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text});}if(thought){reasoning+=thought;toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text:'',reasoning:thought});}}}
+  // A chat with a workspace folder gives the model file tools (OpenCode-style).
+  // The workspace comes from OUR chats row, not the request — the renderer cannot
+  // turn tools on for a chat that has none.
+  const chatRow=one('SELECT workspace FROM chats WHERE id=?',[r.chatId]) as {workspace:string|null}|undefined;
+  const workspace=chatRow?.workspace||null;
+  const tools=workspace?TOOL_DEFS:undefined;
+  const sysPrompt=workspace?(r.systemPrompt?r.systemPrompt+'\n\n':'')+WORKSPACE_PROMPT+'\nWorkspace root: '+workspace:r.systemPrompt;
+  const approveWrite=async(relPath:string,bytes:number)=>{
+   if(!win||win.isDestroyed())return false;
+   if(win.isMinimized())win.restore();win.show();win.focus();
+   const res=await dialog.showMessageBox(win,{type:'question',buttons:['Allow write','Decline'],defaultId:0,cancelId:1,title:'File write request',message:'The model wants to write a file in the workspace folder:',detail:relPath+' ('+(bytes/1024).toFixed(1)+' KB). Review the change in the workspace afterwards; declined writes are reported back to the model.'});
+   return res.response===0;
+  };
+  // The tool loop: stream one completion; if the model asked for tools, run them
+  // (writes go through the approval dialog), feed results back, and continue with
+  // the SAME wire history. Tool turns live only in memory — the DB keeps just the
+  // final answer, with the tool log folded into the collapsible Thinking block.
+  const wire:HistoryMessage[]=[...history];
+  let rounds=0;
+  for(;;){
+   const{url,headers,body}=buildChatRequest(p,wire,{model:r.model,systemPrompt:sysPrompt,temperature:r.temperature,maxTokens:r.maxTokens,topP:r.topP,tools});
+   const response=await fetch(url,{method:'POST',headers,body:JSON.stringify(body),signal});
+   if(!response.ok){const detail=(await response.text()).slice(0,240);throw new Error(response.status===401?'Invalid API key (401)':response.status===403?'Access denied by provider (403): '+detail:response.status===429?'Rate limit reached (429): '+detail:'Provider error '+response.status+': '+detail);}
+   if(!response.body)throw new Error('Streaming unavailable');
+   const toolCalls=new Map<number,ToolCallRecord>();
+   let roundText='';let geminiSeq=0;
+   const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+   while(true){
+    const result=await reader.read();if(result.done)break;armWatchdog();buffer+=decoder.decode(result.value,{stream:true});
+    const lines=buffer.split(/\r?\n/);buffer=lines.pop()??'';
+    for(const line of lines){
+     const text=parseSseEvent(line);const thought=parseReasoningEvent(line);const fin=p.id==='anthropic'?parseAnthropicFinish(line):parseFinishReason(line);if(fin)finish=fin;if(p.id==='anthropic')usage=parseAnthropicUsage(line,usage);else usage=parseUsageEvent(line)??usage;if(text){answer+=text;roundText+=text;toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text});}if(thought){reasoning+=thought;toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text:'',reasoning:thought});}
+     if(workspace){
+      const events=p.id==='anthropic'?parseAnthropicToolEvent(line):p.id==='gemini'?parseGeminiToolCall(line,geminiSeq):parseToolCallDelta(line);
+      for(const ev of events){
+       if(ev.kind==='call-start')toolCalls.set(ev.index,{id:ev.id,name:ev.name,args:''});
+       else if(ev.kind==='call-args'){const c=toolCalls.get(ev.index);if(c)c.args+=ev.chunk;}
+       else if(ev.kind==='call-complete'){geminiSeq++;toolCalls.set(1000+geminiSeq,{id:ev.id,name:ev.name,args:ev.args});}
+       // 'tool-stop' needs no action: accumulated calls alone drive the tool round.
+      }
+     }
+    }
+   }
+   // Any accumulated call is honored even without an explicit tool-stop signal —
+   // some OpenAI-compatible servers omit finish_reason entirely.
+   const doToolRound=!!workspace&&toolCalls.size>0&&rounds<MAX_TOOL_ROUNDS&&!signal.aborted;
+   if(!doToolRound)break;
+   rounds++;
+   wire.push({role:'assistant',content:roundText,toolCalls:[...toolCalls.values()]});
+   const results:Array<{toolCallId:string;name:string;content:string}>=[];
+   // The approval dialog can sit open for minutes — that's user think-time, not a
+   // stalled stream, so the watchdog stands down while tools run.
+   if(watchdog){clearTimeout(watchdog);watchdog=null;}
+   for(const call of toolCalls.values()){
+    let hint='';try{const a=JSON.parse(call.args||'{}') as Record<string,unknown>;hint=String(a.path??a.query??'').slice(0,120);}catch{}
+    const note='\n🔧 **'+call.name+'**'+(hint?' `'+hint+'`':'')+'\n';
+    reasoning+=note;
+    toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text:'',reasoning:note,status:'Running '+call.name+'…'});
+    const res=await runToolCall(workspace,call,approveWrite);
+    results.push({toolCallId:res.toolCallId,name:res.name,content:res.content});
+   }
+   toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text:'',status:''});
+   wire.push({role:'user',content:'',toolResults:results});
+   armWatchdog();
+  }
   const aborted=signal.aborted&&!timedOut;const empty=!answer.trim()&&!reasoning.trim();
   const emptyError=empty&&!aborted?(finish==='content_filter'?'The provider filtered this response':finish==='refusal'?'The model declined to answer':'Provider returned an empty response'):undefined;
   // Persist only when the chat still exists and there is something worth keeping.
