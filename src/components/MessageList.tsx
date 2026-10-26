@@ -1,6 +1,6 @@
 import {memo,useState} from 'react';
 import type {MouseEvent,RefObject} from 'react';
-import {Activity,Brain,Check,Copy,CornerDownLeft,GitFork,Pencil,RefreshCw,Sparkles,Trash2} from 'lucide-react';
+import {Activity,Bookmark,Brain,Check,ChevronDown,Copy,CornerDownLeft,GitFork,Pencil,Quote,RefreshCw,Sparkles,Trash2,Volume2,VolumeX} from 'lucide-react';
 import type {Message,MessageVariant,ProviderConfig} from '../../electron/shared';
 import {useMarkdownHtml,useThrottledMarkdown} from '../useMarkdown';
 import {formatCost,messageCost} from '../cost';
@@ -27,6 +27,7 @@ interface Props{
  onLoadVariants:(messageId:string)=>void;
  onRestoreVariant:(variantId:string)=>void;
  onBranch:(message:Message)=>void;
+ onBookmark:(message:Message)=>void;
 }
 
 // Stable empty array so the `variants[id] ?? NO_VARIANTS` fallback does not hand each
@@ -90,35 +91,59 @@ function Variants({list,onRestore,onClose}:{list:MessageVariant[];onRestore:(id:
 // One row per message. Memoized + markdown parsed once per content string: the whole
 // point of idea #5. `isLast` is a boolean prop (not an identity compare against the
 // parent's `last`) so memo can decide correctly without leaking the array.
-const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,providers,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch}:{
+// Long messages collapse to a preview; the threshold is in rendered text length.
+const COLLAPSE_CHARS=3000;
+// Copy-as-quote: markdown blockquote with attribution, ready to paste anywhere.
+const asQuote=(m:Message)=>m.content.split('\n').map(l=>'> '+l).join('\n')+'\n\n— '+(m.role==='user'?'You':(m.model??'Lumen'))+', '+new Date(m.createdAt).toLocaleString();
+
+// Text-to-speech for assistant replies (Web Speech API, Chromium built-in).
+function speak(text:string,onEnd:()=>void):()=>void{
+ const plain=text.replace(/```[\s\S]*?```/g,' code block ').replace(/[#*`_>]/g,'').slice(0,4000);
+ const u=new SpeechSynthesisUtterance(plain);
+ u.onend=onEnd;u.onerror=onEnd;
+ speechSynthesis.cancel();speechSynthesis.speak(u);
+ return ()=>speechSynthesis.cancel();
+}
+
+const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,providers,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch,onBookmark,onImageClick}:{
  m:Message;isLast:boolean;busy:boolean;highlighted?:boolean;variants:MessageVariant[];providers:ProviderConfig[];
  onCopy:(t:string)=>void;onRegenerate:()=>void;onContinue:(id:string)=>void;
  onDeleteMessage:(m:Message)=>void;onEditMessage:(m:Message,text:string)=>void;
  onLoadVariants:(id:string)=>void;onRestoreVariant:(id:string)=>void;
- onBranch:(m:Message)=>void;
+ onBranch:(m:Message)=>void;onBookmark:(m:Message)=>void;onImageClick:(src:string)=>void;
 }){
  const html=useMarkdownHtml(m.content);
  const [editing,setEditing]=useState(false);
  const [editText,setEditText]=useState(m.content);
  const [showVariants,setShowVariants]=useState(false);
+ // Collapsed state for long messages; user-controlled once toggled.
+ const collapsible=m.content.length>COLLAPSE_CHARS;
+ const [expanded,setExpanded]=useState(false);
+ const [speaking,setSpeaking]=useState(false);
  const truncated=m.finishReason==='length';
  const filtered=m.finishReason==='content_filter';
  const refused=m.finishReason==='refusal';
  // $ estimate from the provider's pricing map; null when the model has no known price.
  const rawCost=m.role==='assistant'?messageCost(providers,m.providerId,m.model,m.promptTokens,m.completionTokens):null;
  const cost=rawCost===null?undefined:formatCost(rawCost);
- return <article id={'msg-'+m.id} className={'message '+m.role+(highlighted?' highlighted':'')}>
+ const toggleSpeak=()=>{
+  if(speaking){speechSynthesis.cancel();setSpeaking(false);return;}
+  setSpeaking(true);speak(m.content,()=>setSpeaking(false));
+ };
+ return <article id={'msg-'+m.id} className={'message '+m.role+(highlighted?' highlighted':'')+(m.bookmarked?' bookmarked':'')}>
   <div className="message-avatar">{m.role==='user'?'Y':<Sparkles size={15}/>}</div>
   <div className="message-content">
    <div className="message-heading"><b>{m.role==='user'?'You':'Lumen'}</b>
     <small>{new Date(m.createdAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</small>
     {m.role==='assistant'&&m.model&&<small className="message-model">{m.model}</small>}
     {m.role==='assistant'&&<Usage promptTokens={m.promptTokens} completionTokens={m.completionTokens} cost={cost}/>}
+    {!!m.bookmarked&&<Bookmark size={12} className="bookmark-flag" aria-label="Bookmarked"/>}
    </div>
    {!!m.attachments?.length&&<div className="attach-list">
     {/* Persisted images are served by the lumen-attachment:// protocol (CSP-listed);
         the optimistic bubble carries its own data: preview instead. */}
-    {m.attachments.map(a=><img className="attach-img" key={a.id} src={a.preview??`lumen-attachment://${a.id}`} alt={a.name} title={a.name}/>)}
+    {m.attachments.map(a=><img className="attach-img" key={a.id} src={a.preview??`lumen-attachment://${a.id}`} alt={a.name} title={a.name+' — click to zoom'}
+     onClick={e=>onImageClick((e.target as HTMLImageElement).src)}/>)}
    </div>}
    {editing
     ?<div className="message-edit">
@@ -129,7 +154,14 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,pr
        <button className="primary-button" onClick={()=>{onEditMessage(m,editText);setEditing(false);}}>Save & resend</button>
       </div>
      </div>
-    :<Markdown html={html}/>}
+    :<>
+      <div className={collapsible&&!expanded?'collapsible collapsed':''}>
+       <Markdown html={html}/>
+      </div>
+      {collapsible&&<button className="collapse-toggle" onClick={()=>setExpanded(v=>!v)} aria-expanded={expanded}>
+       <ChevronDown size={12} className={expanded?'flip':''}/> {expanded?'Collapse':'Show full message ('+Math.round(m.content.length/1000)+'k chars)'}
+      </button>}
+     </>}
    {m.role==='assistant'&&(truncated||filtered||refused)&&
     <div className={'finish-note '+(truncated?'truncated':'blocked')}>
      {truncated?<><span>Answer was cut off by the token limit.</span><button onClick={()=>onContinue(m.id)}><CornerDownLeft size={12}/> Continue</button></>
@@ -137,6 +169,9 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,pr
     </div>}
    <div className="message-actions">
     <button className="copy-btn" onClick={()=>onCopy(m.content)} aria-label="Copy message"><Copy size={12}/> Copy</button>
+    <button className="copy-btn" onClick={()=>onCopy(asQuote(m))} aria-label="Copy as quote" title="Copy as a quote with attribution"><Quote size={12}/></button>
+    {m.role==='assistant'&&<button className={'copy-btn'+(speaking?' speaking':'')} onClick={toggleSpeak} aria-label={speaking?'Stop reading aloud':'Read aloud'} title={speaking?'Stop reading aloud':'Read aloud (text-to-speech)'}>{speaking?<VolumeX size={12}/>:<Volume2 size={12}/>}</button>}
+    {!m.id.startsWith('pending-')&&<button className={'copy-btn'+(m.bookmarked?' bookmarked':'')} onClick={()=>onBookmark(m)} aria-label={m.bookmarked?'Remove bookmark':'Bookmark message'} title={m.bookmarked?'Remove bookmark':'Bookmark this message'}><Bookmark size={12}/></button>}
     {m.role==='user'&&!busy&&<button className="copy-btn" onClick={()=>{setEditText(m.content);setEditing(v=>!v);}} aria-label="Edit message"><Pencil size={12}/> Edit</button>}
     {m.role==='assistant'&&isLast&&<button className="copy-btn" disabled={busy} onClick={onRegenerate} aria-label="Regenerate response"><RefreshCw size={12}/> Regenerate</button>}
     {m.role==='assistant'&&!!m.variantCount&&<button className="copy-btn" onClick={()=>{setShowVariants(v=>!v);onLoadVariants(m.id);}} aria-label="Previous answers">History ({m.variantCount})</button>}
@@ -150,12 +185,19 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,pr
  </article>;
 });
 
-export default function MessageList({messages,busy,stream,reasoning,error,status,highlightId,variants,providers,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch}:Props){
+export default function MessageList({messages,busy,stream,reasoning,error,status,highlightId,variants,providers,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch,onBookmark}:Props){
  const last=messages[messages.length-1];
  const canRetry=!!last&&last.role==='assistant'&&!busy;
  // The streaming bubble re-parses on a throttle, not per chunk (idea #17).
  const streamHtml=useThrottledMarkdown(stream,120);
+ // Image lightbox: full-screen zoom on click.
+ const [lightbox,setLightbox]=useState('');
+ // Bookmarked messages get a jump strip at the top of the feed.
+ const bookmarks=messages.filter(m=>m.bookmarked&&!m.id.startsWith('pending-'));
  return <div className="message-list">
+  {!!bookmarks.length&&<div className="bookmark-strip" aria-label="Bookmarked messages">
+   <Bookmark size={12}/>{bookmarks.map(b=><button key={b.id} title={b.content.slice(0,120)} onClick={()=>document.getElementById('msg-'+b.id)?.scrollIntoView({block:'center'})}>{b.content.replace(/\s+/g,' ').slice(0,40)||'(attachment)'}</button>)}
+  </div>}
   {messages.map((m,i)=>{
    const prev=messages[i-1];
    const newDay=!prev||dayStart(prev.createdAt)!==dayStart(m.createdAt);
@@ -164,13 +206,15 @@ export default function MessageList({messages,busy,stream,reasoning,error,status
     <MessageRow m={m} isLast={i===messages.length-1} busy={busy} highlighted={m.id===highlightId} variants={variants[m.id]??NO_VARIANTS} providers={providers}
      onCopy={onCopy} onRegenerate={onRegenerate} onContinue={onContinue}
      onDeleteMessage={onDeleteMessage} onEditMessage={onEditMessage}
-     onLoadVariants={onLoadVariants} onRestoreVariant={onRestoreVariant} onBranch={onBranch}/>
+     onLoadVariants={onLoadVariants} onRestoreVariant={onRestoreVariant} onBranch={onBranch} onBookmark={onBookmark} onImageClick={setLightbox}/>
    </div>;
   })}
   {(busy||stream||reasoning)&&<article className="message assistant" aria-live="polite" aria-busy="true">
    <div className="message-avatar"><Sparkles size={15}/></div>
    <div className="message-content">
     <div className="message-heading"><b>Lumen</b><small>{status??(stream?'Responding':'Thinking')}</small></div>
+    {/* Indeterminate progress while generating — no total is knowable mid-stream. */}
+    <div className="gen-progress" aria-hidden="true"><i/></div>
     <Reasoning key={stream?'answering':'thinking'} text={reasoning} collapsedByDefault={!!stream} live/>
     {stream
      ?<Markdown html={streamHtml}/>
@@ -179,5 +223,6 @@ export default function MessageList({messages,busy,stream,reasoning,error,status
   </article>}
   {error&&<div className="error-banner" role="alert"><Activity size={14}/><span>{error}</span>{canRetry&&<button onClick={onRetry}>Retry</button>}</div>}
   <div ref={bottomRef}/>
+  {lightbox&&<div className="lightbox" role="dialog" aria-label="Image preview" onClick={()=>setLightbox('')}><img src={lightbox} alt="Attachment, full size"/></div>}
  </div>;
 }

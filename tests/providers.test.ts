@@ -460,6 +460,16 @@ describe('personas and appearance settings',()=>{
   expect(out.personaId).toBe('p1');
   expect(clampSettings({accent:'blue'}).accent).toBe('blue');
  });
+ it('clamps templates, defaultWorkspace, customCss and compactMode',()=>{
+  const out=clampSettings({
+   templates:[{id:'t1',name:'Review',text:'Review this: {{input}}'},{id:'',name:'bad',text:'x'},{id:'t2',name:'',text:'y'}],
+   defaultWorkspace:'C:\\proj',customCss:'body{color:red}',compactMode:true,
+  });
+  expect(out.templates).toEqual([{id:'t1',name:'Review',text:'Review this: {{input}}'}]);
+  expect(out.defaultWorkspace).toBe('C:\\proj');
+  expect(out.customCss).toBe('body{color:red}');
+  expect(out.compactMode).toBe(true);
+ });
 });
 
 describe('auto-title cleanup',()=>{

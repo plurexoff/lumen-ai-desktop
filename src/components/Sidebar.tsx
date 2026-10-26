@@ -1,7 +1,7 @@
 import {useEffect,useMemo,useState} from 'react';
 import type {DragEvent} from 'react';
-import {Check,ChevronDown,ChevronRight,Folder as FolderIcon,FolderPlus,Loader2,MessageSquare,MoreHorizontal,Pencil,Pin,PinOff,Plus,Search,Trash2,X,Zap} from 'lucide-react';
-import type {Chat,Folder,ProviderConfig} from '../../electron/shared';
+import {Archive,ArchiveRestore,Check,ChevronDown,ChevronRight,Folder as FolderIcon,FolderPlus,Loader2,MessageSquare,MoreHorizontal,Pencil,Pin,PinOff,Plus,Search,SlidersHorizontal,Tag,Trash2,X,Zap} from 'lucide-react';
+import type {Chat,Folder,ProviderConfig,SearchFilters,SearchResult} from '../../electron/shared';
 
 interface Props{
  chats:Chat[];
@@ -11,6 +11,8 @@ interface Props{
  // Chats with a generation in flight; memoized as a Set in App so identity is stable
  // while text streams and only changes when a generation starts or ends.
  busyIds:Set<string>;
+ // Chats with a reply that finished while another chat was open (cleared on open).
+ unread:Set<string>;
  needsSetup:boolean;
  newChatHotkey:string;
  onNew:()=>void;
@@ -20,6 +22,8 @@ interface Props{
  onOpenSettings:()=>void;
  onTogglePin:(chat:Chat)=>void;
  onMoveFolder:(chatId:string,folderId:string|null)=>void;
+ onToggleArchived:(chat:Chat)=>void;
+ onSetTags:(chatId:string,tags:string[])=>void;
  onCreateFolder:(name:string)=>void;
  onRenameFolder:(id:string,name:string)=>void;
  onDeleteFolder:(id:string)=>void;
@@ -27,7 +31,7 @@ interface Props{
  onOpenHit:(chatId:string,messageId:string)=>void;
 }
 
-interface SearchHit{chatId:string;messageId:string;title:string;snippet:string}
+type SearchHit=SearchResult;
 
 function groupLabel(updatedAt:number):string{
  const d=new Date(updatedAt),now=new Date();
@@ -39,7 +43,7 @@ function groupLabel(updatedAt:number):string{
  return 'Earlier';
 }
 
-export default function Sidebar({chats,activeId,providers,folders,busyIds,needsSetup,newChatHotkey,onNew,onOpen,onDelete,onRename,onOpenSettings,onTogglePin,onMoveFolder,onCreateFolder,onRenameFolder,onDeleteFolder,onOpenHit}:Props){
+export default function Sidebar({chats,activeId,providers,folders,busyIds,unread,needsSetup,newChatHotkey,onNew,onOpen,onDelete,onRename,onOpenSettings,onTogglePin,onMoveFolder,onToggleArchived,onSetTags,onCreateFolder,onRenameFolder,onDeleteFolder,onOpenHit}:Props){
  const [query,setQuery]=useState('');
  const [hits,setHits]=useState<SearchHit[]>([]);
  const [searching,setSearching]=useState(false);
@@ -56,15 +60,31 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,needsS
  const [pendingFolderDelete,setPendingFolderDelete]=useState<Folder|null>(null);
  // Drop-target highlight while dragging a chat over a folder header / ungrouped area.
  const [dropTarget,setDropTarget]=useState<string|null>(null);
+ // Batch 5: archived chats live in a collapsed section; tags edit inline; the search
+ // panel has optional filters (model / role / folder / tag / date range).
+ const [showArchived,setShowArchived]=useState(false);
+ const [tagEditId,setTagEditId]=useState<string|null>(null);
+ const [tagValue,setTagValue]=useState('');
+ const [showFilters,setShowFilters]=useState(false);
+ const [fModel,setFModel]=useState('');
+ const [fRole,setFRole]=useState('');
+ const [fFolder,setFFolder]=useState('');
+ const [fTag,setFTag]=useState('');
+ const [fFrom,setFFrom]=useState('');
+ const [fTo,setFTo]=useState('');
+ const hasFilters=!!(fModel||fRole||fFolder||fTag||fFrom||fTo);
 
  // Full-text search over message contents (debounced) in addition to titles.
  useEffect(()=>{
   const term=query.trim();
-  if(term.length<2){setHits([]);setSearching(false);return;}
+  if(term.length<2&&!hasFilters){setHits([]);setSearching(false);return;}
   setSearching(true);
-  const t=window.setTimeout(()=>{void window.lumen.chats.search(term).then(r=>{setHits(r);setSearching(false);}).catch(()=>setSearching(false));},250);
+  const filters:SearchFilters={query:term||undefined,model:fModel||undefined,role:(fRole as 'user'|'assistant')||undefined,folderId:fFolder||null,tag:fTag.trim()||undefined};
+  if(fFrom){const t=new Date(fFrom+'T00:00:00').getTime();if(Number.isFinite(t))filters.from=t;}
+  if(fTo){const t=new Date(fTo+'T23:59:59').getTime();if(Number.isFinite(t))filters.to=t;}
+  const t=window.setTimeout(()=>{void window.lumen.chats.search(filters).then(r=>{setHits(r);setSearching(false);}).catch(()=>setSearching(false));},250);
   return()=>window.clearTimeout(t);
- },[query]);
+ },[query,fModel,fRole,fFolder,fTag,fFrom,fTo,hasFilters]);
 
  // Escape closes the search panel and clears it — the modal-free way out.
  useEffect(()=>{
@@ -74,32 +94,37 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,needsS
   return()=>window.removeEventListener('keydown',onKey);
  },[query]);
 
- const pinnedChats=useMemo(()=>chats.filter(c=>c.pinned),[chats]);
+ const visibleChats=useMemo(()=>chats.filter(c=>!c.archived),[chats]);
+ const archivedChats=useMemo(()=>chats.filter(c=>c.archived),[chats]);
+ const pinnedChats=useMemo(()=>visibleChats.filter(c=>c.pinned),[visibleChats]);
  const folderChats=useMemo(()=>{
   const map=new Map<string,Chat[]>();
-  for(const c of chats)if(!c.pinned&&c.folderId)(map.get(c.folderId)??map.set(c.folderId,[]).get(c.folderId)!).push(c);
+  for(const c of visibleChats)if(!c.pinned&&c.folderId)(map.get(c.folderId)??map.set(c.folderId,[]).get(c.folderId)!).push(c);
   return map;
- },[chats]);
+ },[visibleChats]);
  // Ungrouped = not pinned and not in any (existing) folder.
  const ungrouped=useMemo(()=>{
   const ids=new Set(folders.map(f=>f.id));
-  const list=chats.filter(c=>!c.pinned&&(!c.folderId||!ids.has(c.folderId)));
+  const list=visibleChats.filter(c=>!c.pinned&&(!c.folderId||!ids.has(c.folderId)));
   return list.reduce<Record<string,Chat[]>>((a,c)=>{(a[groupLabel(c.updatedAt)]??=[]).push(c);return a;},{});
- },[chats,folders]);
+ },[visibleChats,folders]);
+ // All known models across providers — for the search filter dropdown.
+ const allModels=useMemo(()=>[...new Set(providers.flatMap(p=>p.models))],[providers]);
+ const allTags=useMemo(()=>[...new Set(chats.flatMap(c=>c.tags??[]))],[chats]);
 
  // Conversations whose TITLE matches, shown in their own section above the message
  // hits. contentHits below excludes these so a chat is not listed twice.
  const titleMatches=useMemo(()=>{
   const term=query.trim().toLowerCase();
-  return term?chats.filter(c=>c.title.toLowerCase().includes(term)):[];
- },[chats,query]);
+  return term?visibleChats.filter(c=>c.title.toLowerCase().includes(term)):[];
+ },[visibleChats,query]);
 
  const contentHits=useMemo(()=>{
   const term=query.trim().toLowerCase();
-  if(!term)return [];
+  if(!term&&!hasFilters)return [];
   const titleIds=new Set(titleMatches.map(c=>c.id));
   return hits.filter(h=>!titleIds.has(h.chatId));
- },[hits,query,titleMatches]);
+ },[hits,query,titleMatches,hasFilters]);
 
  function startRename(chat:Chat){setRenamingId(chat.id);setRenameValue(chat.title);}
  function commitRename(){
@@ -124,6 +149,12 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,needsS
  function toggleCollapsed(id:string){
   setCollapsed(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n;});
  }
+ function startTagEdit(c:Chat){setTagEditId(c.id);setTagValue((c.tags??[]).join(', '));}
+ function commitTagEdit(){
+  if(!tagEditId)return;
+  onSetTags(tagEditId,tagValue.split(',').map(t=>t.trim()).filter(Boolean));
+  setTagEditId(null);
+ }
 
  // Drag-and-drop: chats carry their id; folder headers and the ungrouped label are
  // drop targets. Dropping on the ungrouped label clears the folder.
@@ -147,12 +178,21 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,needsS
     :<>
      <button className="chat-name" onDoubleClick={()=>startRename(c)} onClick={()=>onOpen(c)} title={c.title}>
       {busyIds.has(c.id)?<Loader2 size={14} className="spin"/>:<MessageSquare size={14}/>}<span>{c.title}</span>
+      {unread.has(c.id)&&<i className="unread-dot" aria-label="New reply"/>}
      </button>
-     <span className="chat-actions">
-      <button aria-label={(c.pinned?'Unpin ':'Pin ')+c.title} title={c.pinned?'Unpin':'Pin to top'} onClick={()=>onTogglePin(c)}>{c.pinned?<PinOff size={12}/>:<Pin size={12}/>}</button>
-      <button aria-label={'Rename '+c.title} title="Rename (double-click)" onClick={()=>startRename(c)}><Pencil size={12}/></button>
-      <button aria-label={'Delete '+c.title} title="Delete" onClick={()=>setPendingDelete(c)}><Trash2 size={13}/></button>
-     </span>
+     {!!c.tags?.length&&<span className="chat-tags">{c.tags.map(t=><button key={t} className="tag-chip" title={'Search tag: '+t} onClick={()=>{setQuery('');setFTag(t);setShowFilters(true);setShowResults(true);}}>{t}</button>)}</span>}
+     {tagEditId===c.id
+      ?<span className="chat-rename"><input autoFocus value={tagValue} placeholder="tags, comma separated" aria-label="Edit tags"
+        onChange={e=>setTagValue(e.target.value)} onBlur={commitTagEdit}
+        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();commitTagEdit();}if(e.key==='Escape')setTagEditId(null);}}/>
+        <button className="rename-ok" aria-label="Save tags" onMouseDown={e=>e.preventDefault()} onClick={commitTagEdit}><Check size={13}/></button></span>
+      :<span className="chat-actions">
+       <button aria-label={(c.pinned?'Unpin ':'Pin ')+c.title} title={c.pinned?'Unpin':'Pin to top'} onClick={()=>onTogglePin(c)}>{c.pinned?<PinOff size={12}/>:<Pin size={12}/>}</button>
+       <button aria-label={'Edit tags of '+c.title} title="Tags (comma separated)" onClick={()=>startTagEdit(c)}><Tag size={12}/></button>
+       <button aria-label={(c.archived?'Unarchive ':'Archive ')+c.title} title={c.archived?'Unarchive':'Archive'} onClick={()=>onToggleArchived(c)}>{c.archived?<ArchiveRestore size={12}/>:<Archive size={12}/>}</button>
+       <button aria-label={'Rename '+c.title} title="Rename (double-click)" onClick={()=>startRename(c)}><Pencil size={12}/></button>
+       <button aria-label={'Delete '+c.title} title="Delete" onClick={()=>setPendingDelete(c)}><Trash2 size={13}/></button>
+      </span>}
     </>}
   </div>;
  }
@@ -163,11 +203,24 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,needsS
   <button className="new-chat" onClick={onNew}><Plus size={16}/>New conversation<kbd>{newChatHotkey}</kbd></button>
   <label className="search-box"><Search size={14}/>
    <input value={query} onChange={e=>{setQuery(e.target.value);setShowResults(true);}} onFocus={()=>setShowResults(true)} placeholder="Search conversations" aria-label="Search conversations"/>
+   <button type="button" className={'filter-toggle'+(showFilters||hasFilters?' active':'')} aria-label="Search filters" title="Filter by model, role, folder, tag, date" onClick={()=>setShowFilters(v=>!v)}><SlidersHorizontal size={12}/></button>
    {query&&<button type="button" aria-label="Clear search" onClick={()=>{setQuery('');setHits([]);}}><X size={12}/></button>}
   </label>
-  {!showResults||!query.trim()?<>
+  {showFilters&&<div className="search-filters">
+   <select value={fModel} onChange={e=>setFModel(e.target.value)} aria-label="Filter by model"><option value="">Any model</option>{allModels.map(m=><option key={m} value={m}>{m}</option>)}</select>
+   <select value={fRole} onChange={e=>setFRole(e.target.value)} aria-label="Filter by role"><option value="">Any role</option><option value="user">My messages</option><option value="assistant">Replies</option></select>
+   <select value={fFolder} onChange={e=>setFFolder(e.target.value)} aria-label="Filter by folder"><option value="">Any folder</option>{folders.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}</select>
+   <input list="lumen-tags" value={fTag} onChange={e=>setFTag(e.target.value)} placeholder="Tag" aria-label="Filter by tag"/>
+   <datalist id="lumen-tags">{allTags.map(t=><option key={t} value={t}/>)}</datalist>
+   <div className="filter-dates">
+    <input type="date" value={fFrom} onChange={e=>setFFrom(e.target.value)} aria-label="From date"/>
+    <input type="date" value={fTo} onChange={e=>setFTo(e.target.value)} aria-label="To date"/>
+   </div>
+   {hasFilters&&<button className="filter-clear" onClick={()=>{setFModel('');setFRole('');setFFolder('');setFTag('');setFFrom('');setFTo('');}}>Clear filters</button>}
+  </div>}
+  {!showResults||(!query.trim()&&!hasFilters)?<>
    <div className="section-label">WORKSPACE</div>
-   <button className="nav-link active"><MessageSquare size={15}/>Conversations<span>{chats.length}</span></button>
+   <button className="nav-link active"><MessageSquare size={15}/>Conversations<span>{visibleChats.length}</span></button>
    <button className="nav-link" onClick={onOpenSettings}><Zap size={15}/>Providers & settings<span>{providers.length}</span></button>
    <div className="chat-list">
     {!!pinnedChats.length&&<>
@@ -208,6 +261,12 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,needsS
       {list.map(chatRow)}
      </div>)}
     </div>
+    {!!archivedChats.length&&<div className="archived-section">
+     <button className="folder-toggle archived-toggle" onClick={()=>setShowArchived(v=>!v)} aria-expanded={showArchived}>
+      {showArchived?<ChevronDown size={13}/>:<ChevronRight size={13}/>}<Archive size={13}/><span>Archived</span><i>{archivedChats.length}</i>
+     </button>
+     {showArchived&&archivedChats.map(chatRow)}
+    </div>}
    </div>
   </>:<div className="chat-list">
    {!!titleMatches.length&&<>
@@ -223,7 +282,8 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,needsS
    {/* Message hits jump straight to the matched message and highlight it. */}
    {contentHits.map(h=><div className="chat-row" key={h.messageId}>
     <button className="chat-name" onClick={()=>onOpenHit(h.chatId,h.messageId)}>
-     <Search size={13}/><span className="hit-text"><b>{h.title}</b><small>{h.snippet}</small></span>
+     <Search size={13}/><span className="hit-text"><b>{h.title}</b><small>{h.snippet}</small>
+      <small className="hit-meta">{h.role==='user'?'You':'Lumen'}{h.model?' · '+h.model:''} · {new Date(h.createdAt).toLocaleDateString()}</small></span>
     </button>
    </div>)}
   </div>}

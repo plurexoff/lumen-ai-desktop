@@ -1,8 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { DesktopAPI } from './shared';
 const api:DesktopAPI={
- window:{minimize:()=>ipcRenderer.send('window:minimize'),toggleMaximize:()=>ipcRenderer.send('window:toggle-maximize'),close:()=>ipcRenderer.send('window:close')},
- app:{version:()=>ipcRenderer.invoke('app:version')},
+ window:{minimize:()=>ipcRenderer.send('window:minimize'),toggleMaximize:()=>ipcRenderer.send('window:toggle-maximize'),close:()=>ipcRenderer.send('window:close'),setAlwaysOnTop:on=>ipcRenderer.send('window:always-on-top',on)},
+ app:{version:()=>ipcRenderer.invoke('app:version'),pickFolder:title=>ipcRenderer.invoke('app:pick-folder',title)},
  chats:{
   list:()=>ipcRenderer.invoke('chats:list'),
   create:()=>ipcRenderer.invoke('chats:create'),
@@ -11,6 +11,10 @@ const api:DesktopAPI={
   setFolder:(id,folderId)=>ipcRenderer.invoke('chats:set-folder',id,folderId),
   pickWorkspace:id=>ipcRenderer.invoke('chats:pick-workspace',id),
   clearWorkspace:id=>ipcRenderer.invoke('chats:clear-workspace',id),
+  setArchived:(id,archived)=>ipcRenderer.invoke('chats:set-archived',id,archived),
+  setReadonly:(id,readonly)=>ipcRenderer.invoke('chats:set-readonly',id,readonly),
+  setTags:(id,tags)=>ipcRenderer.invoke('chats:set-tags',id,tags),
+  bookmarkMessage:(id,bookmarked)=>ipcRenderer.invoke('chats:bookmark-message',id,bookmarked),
   delete:id=>ipcRenderer.invoke('chats:delete',id),
   messages:id=>ipcRenderer.invoke('chats:messages',id),
   deleteMessage:(id,chatId)=>ipcRenderer.invoke('chats:delete-message',id,chatId),
@@ -18,9 +22,17 @@ const api:DesktopAPI={
   restoreVariant:variantId=>ipcRenderer.invoke('chats:restore-variant',variantId),
   branch:(id,messageId)=>ipcRenderer.invoke('chats:branch',id,messageId),
   usageSummary:()=>ipcRenderer.invoke('chats:usage-summary'),
+  usageByDay:()=>ipcRenderer.invoke('chats:usage-by-day'),
+  summarize:id=>ipcRenderer.invoke('chats:summarize',id),
   export:(id,format)=>ipcRenderer.invoke('chats:export',id,format),
-  search:q=>ipcRenderer.invoke('chats:search',q),
+  exportPrepared:(id,format,html)=>ipcRenderer.invoke('chats:export-prepared',id,format,html),
+  search:filters=>ipcRenderer.invoke('chats:search',filters),
+  readWorkspaceFile:(id,rel)=>ipcRenderer.invoke('chats:read-workspace-file',id,rel),
+  todos:id=>ipcRenderer.invoke('chats:todos',id),
+  fileOps:id=>ipcRenderer.invoke('chats:file-ops',id),
+  rollbackOp:opId=>ipcRenderer.invoke('chats:rollback-op',opId),
   onRenamed:callback=>{const listener=(_event:Electron.IpcRendererEvent,data:Parameters<typeof callback>[0])=>callback(data);ipcRenderer.on('chats:renamed',listener);return()=>ipcRenderer.removeListener('chats:renamed',listener);},
+  onTodos:callback=>{const listener=(_event:Electron.IpcRendererEvent,data:Parameters<typeof callback>[0])=>callback(data);ipcRenderer.on('chats:todos',listener);return()=>ipcRenderer.removeListener('chats:todos',listener);},
  },
  providers:{
   list:()=>ipcRenderer.invoke('providers:list'),
@@ -50,6 +62,8 @@ const api:DesktopAPI={
   health:()=>ipcRenderer.invoke('data:health'),
   wipe:()=>ipcRenderer.invoke('data:wipe'),
   openFolder:()=>ipcRenderer.invoke('data:open-folder'),
+  backup:()=>ipcRenderer.invoke('data:backup'),
+  restore:()=>ipcRenderer.invoke('data:restore'),
  },
  settings:{get:()=>ipcRenderer.invoke('settings:get'),save:settings=>ipcRenderer.invoke('settings:save',settings)},
 };

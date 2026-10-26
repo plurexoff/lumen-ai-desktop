@@ -1,9 +1,11 @@
 import {forwardRef,useEffect,useRef,useState} from 'react';
-import {ArrowUp,ChevronDown,ImagePlus,KeyRound,ListPlus,Shield,TriangleAlert,Wand2,X} from 'lucide-react';
-import type {Persona,ProviderConfig,ProviderId} from '../../electron/shared';
+import {ArrowUp,ChevronDown,Eye,ImagePlus,KeyRound,LayoutTemplate,ListPlus,Mic,MicOff,Shield,TriangleAlert,Wand2,X} from 'lucide-react';
+import type {Persona,PromptTemplate,ProviderConfig,ProviderId} from '../../electron/shared';
 import {IMAGE_MIMES} from '../../electron/shared';
 import type {PendingImage} from '../store';
 import {providerColors} from '../store';
+import {renderMarkdown} from '../markdown';
+import {formatCost} from '../cost';
 
 interface Props{
  draft:string;
@@ -15,6 +17,7 @@ interface Props{
  images:PendingImage[];
  personas:Persona[];
  personaId:string;
+ templates:PromptTemplate[];
  // Sent-message history for ArrowUp recall (newest last), and messages queued while
  // this chat was busy (they auto-send when the reply finishes).
  history:string[];
@@ -30,9 +33,30 @@ interface Props{
  onOpenSettings:()=>void;
  onEnhance:(text:string)=>Promise<string>;
  onClearQueue:()=>void;
+ // Slash commands (/persona X, /model Y, /clear, /template N). Returns true when the
+ // draft was consumed as a command.
+ onSlash:(raw:string)=>boolean;
 }
 
-export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,busy,needsSetup,providers,providerId,model,images,personas,personaId,history,queued,onAddImages,onRemoveImage,onPersona,onDraft,onSend,onStop,onProvider,onModel,onOpenSettings,onEnhance,onClearQueue},ref){
+// Rough draft token estimate (chars/4) plus its cost at the current model's input
+// price. Deliberately approximate — it is a budgeting hint, not accounting.
+function estimateDraft(text:string,providers:ProviderConfig[],providerId:ProviderId,model:string):string{
+ if(!text.trim())return '';
+ const tokens=Math.ceil(text.length/4);
+ const price=providers.find(p=>p.id===providerId)?.pricing?.[model];
+ const cost=price?formatCost(tokens/1e6*price.input):null;
+ return '~'+tokens.toLocaleString()+' tokens'+(cost?' · ≈'+cost+' input':'');
+}
+
+// Minimal shape of the Web Speech API recognizer (not in TS's DOM lib for all builds).
+interface SpeechRecognitionLike{
+ lang:string;interimResults:boolean;continuous:boolean;
+ onresult:((e:{results:ArrayLike<ArrayLike<{transcript:string}>>})=>void)|null;
+ onend:(()=>void)|null;onerror:(()=>void)|null;
+ start():void;stop():void;
+}
+
+export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,busy,needsSetup,providers,providerId,model,images,personas,personaId,templates,history,queued,onAddImages,onRemoveImage,onPersona,onDraft,onSend,onStop,onProvider,onModel,onOpenSettings,onEnhance,onClearQueue,onSlash},ref){
  const current=providers.find(p=>p.id===providerId);
  const models=current?.models??[];
  // An IME (CJK input) fires Enter to commit a candidate, not to send the message.
@@ -86,6 +110,34 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
    .catch(()=>{})
    .finally(()=>setEnhancing(false));
  };
+ // Slash commands: a draft starting with "/" is consumed by App (/persona, /model,
+ // /clear, /template …) instead of being sent as a message.
+ const sendOrSlash=()=>{if(busy){onStop();return;}if(draft.trimStart().startsWith('/')&&onSlash(draft.trim()))return;onSend();};
+ // Prompt templates: {{input}} is replaced by the current draft.
+ const [showTemplates,setShowTemplates]=useState(false);
+ const applyTemplate=(t:PromptTemplate)=>{onDraft(t.text.includes('{{input}}')?t.text.replace('{{input}}',draft):(draft?draft+'\n\n':'')+t.text);setShowTemplates(false);requestAnimationFrame(()=>{const el=(ref&&typeof ref!=='function'?ref.current:null)??null;if(el){autosize(el);el.focus();}});};
+ // Voice input via the Chromium speech recognizer.
+ const [listening,setListening]=useState(false);
+ const recogRef=useRef<{stop:()=>void}|null>(null);
+ useEffect(()=>()=>{recogRef.current?.stop();},[]);
+ const toggleVoice=()=>{
+  if(listening){recogRef.current?.stop();setListening(false);return;}
+  const w=window as unknown as {SpeechRecognition?:new()=>SpeechRecognitionLike;webkitSpeechRecognition?:new()=>SpeechRecognitionLike};
+  const Ctor=w.SpeechRecognition??w.webkitSpeechRecognition;
+  if(!Ctor){setDropError('Speech recognition is not available in this build');return;}
+  const recog=new Ctor();
+  recog.lang='ru-RU';recog.interimResults=true;recog.continuous=true;
+  const base=draft;
+  recog.onresult=e=>{let text=base;for(let i=0;i<e.results.length;i++)text+=(text&&!text.endsWith(' ')?' ':'')+e.results[i][0].transcript;onDraft(text);};
+  recog.onend=()=>setListening(false);
+  recog.onerror=()=>setListening(false);
+  recogRef.current=recog;
+  try{recog.start();setListening(true);}catch{setListening(false);}
+ };
+ // Live markdown preview of the draft + a rough token/cost counter.
+ const [preview,setPreview]=useState(false);
+ const previewHtml=preview&&draft.trim()?renderMarkdown(draft):'';
+ const counter=estimateDraft(draft,providers,providerId,model);
  return <footer className="composer-area"><div className="composer">
   {needsSetup&&<div className="composer-warning">
    <KeyRound size={13}/><span>No provider is connected yet.</span>
@@ -107,14 +159,18 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
   </div>}
   <input ref={fileInput} type="file" accept={IMAGE_MIMES.join(',')} multiple hidden aria-hidden="true" tabIndex={-1}
    onChange={e=>{const files=Array.from(e.target.files??[]);if(files.length)onAddImages(files);e.target.value='';}}/>
+  {preview&&<div className="composer-preview markdown-body" aria-label="Draft preview" dangerouslySetInnerHTML={{__html:previewHtml||'<p>Nothing to preview yet.</p>'}}/>}
+  {showTemplates&&<div className="templates-menu" role="menu">
+   {templates.length?templates.map(t=><button key={t.id} role="menuitem" onClick={()=>applyTemplate(t)}><LayoutTemplate size={12}/><span>{t.name}</span></button>):<span className="templates-empty">No templates yet — add them in Settings</span>}
+  </div>}
   <textarea ref={ref} value={draft} rows={1} spellCheck
    onCompositionStart={()=>{composing.current=true;}}
    onCompositionEnd={()=>{composing.current=false;}}
    onChange={e=>{nav.current=null;onDraft(e.target.value);autosize(e.currentTarget);}}
    onKeyDown={e=>{
     // Ctrl/Cmd+Enter always sends; plain Enter sends unless composing an IME string.
-    if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();onSend();return;}
-    if(e.key==='Enter'&&!e.shiftKey&&!composing.current){e.preventDefault();onSend();return;}
+    if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();sendOrSlash();return;}
+    if(e.key==='Enter'&&!e.shiftKey&&!composing.current){e.preventDefault();sendOrSlash();return;}
     // ArrowUp at the very start of the input recalls the last sent message.
     if(e.key==='ArrowUp'&&history.length&&e.currentTarget.selectionStart===0&&e.currentTarget.selectionEnd===0){
      e.preventDefault();
@@ -183,12 +239,15 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
    <div className="send-area">
     <button className="attach-btn" aria-label="Attach images" title="Attach images (PNG, JPEG, WebP, GIF)" onClick={()=>fileInput.current?.click()}><ImagePlus size={15}/></button>
     <button className={'attach-btn enhance-btn'+(enhancing?' spinning':'')} aria-label="Enhance prompt" title="Enhance prompt: the model rewrites your draft" disabled={!draft.trim()||busy||enhancing} onClick={enhance}><Wand2 size={15}/></button>
+    <button className={'attach-btn'+(showTemplates?' active':'')} aria-label="Prompt templates" title="Prompt templates ({{input}} = your draft)" onClick={()=>setShowTemplates(v=>!v)}><LayoutTemplate size={15}/></button>
+    <button className={'attach-btn'+(listening?' active recording':'')} aria-label={listening?'Stop voice input':'Voice input'} title={listening?'Stop voice input':'Voice input (speech-to-text)'} onClick={toggleVoice}>{listening?<MicOff size={15}/>:<Mic size={15}/>}</button>
+    <button className={'attach-btn'+(preview?' active':'')} aria-label="Toggle markdown preview" title="Preview markdown" disabled={!draft.trim()} onClick={()=>setPreview(v=>!v)}><Eye size={15}/></button>
     <small><kbd>↵</kbd> to send</small>
     {/* Never pass the handler straight to onClick: React would hand it the mouse
         event as the first argument, and send(text?) would treat that object as the
         message body. Wrap it so the call is genuinely zero-arg. */}
-    <button className={'send-btn '+(busy?'stop':'')} aria-label={busy?'Stop generation':'Send message'} title={busy?'Stop generation':'Send message'} onClick={()=>{if(busy)onStop();else onSend();}}>{busy?<X size={15}/>:<ArrowUp size={16}/>}</button>
+    <button className={'send-btn '+(busy?'stop':'')} aria-label={busy?'Stop generation':'Send message'} title={busy?'Stop generation':'Send message'} onClick={()=>{sendOrSlash();}}>{busy?<X size={15}/>:<ArrowUp size={16}/>}</button>
    </div>
   </div>
- </div><div className="composer-note"><Shield size={11} aria-hidden="true"/> API keys encrypted on this device <span>·</span> Responses may not always be accurate</div></footer>;
+ </div><div className="composer-note"><Shield size={11} aria-hidden="true"/> API keys encrypted on this device <span>·</span> Responses may not always be accurate{counter&&<><span>·</span><span className="composer-counter">{counter}</span></>}</div></footer>;
 });

@@ -6,7 +6,7 @@ let db:Database;let filePath:string;let saveTimer:NodeJS.Timeout|null=null;
 const SAVE_DEBOUNCE_MS=250;
 // Bumped whenever the schema changes; stored in `PRAGMA user_version` so an old
 // install can be migrated forward and a too-new file can be refused outright.
-export const SCHEMA_VERSION=5;
+export const SCHEMA_VERSION=6;
 
 export interface DbStatus{recovered:boolean;backupPath:string|null;newerVersion:number|null;}
 let status:DbStatus={recovered:false,backupPath:null,newerVersion:null};
@@ -48,8 +48,8 @@ export async function openDatabase(){
 }
 
 function createSchema(){
- db.run('CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY,title TEXT NOT NULL,provider_id TEXT NOT NULL,model TEXT NOT NULL,updated_at INTEGER NOT NULL,branched_from TEXT,pinned INTEGER NOT NULL DEFAULT 0,folder_id TEXT,workspace TEXT)');
- db.run('CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,role TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL)');
+ db.run('CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY,title TEXT NOT NULL,provider_id TEXT NOT NULL,model TEXT NOT NULL,updated_at INTEGER NOT NULL,branched_from TEXT,pinned INTEGER NOT NULL DEFAULT 0,folder_id TEXT,workspace TEXT,archived INTEGER NOT NULL DEFAULT 0,workspace_readonly INTEGER NOT NULL DEFAULT 0,todos TEXT)');
+ db.run('CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,role TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL,bookmarked INTEGER NOT NULL DEFAULT 0)');
  db.run("CREATE TABLE IF NOT EXISTS providers(id TEXT PRIMARY KEY,name TEXT NOT NULL,base_url TEXT NOT NULL,models TEXT NOT NULL,headers TEXT NOT NULL DEFAULT '{}')");
  db.run('CREATE TABLE IF NOT EXISTS secrets(id TEXT PRIMARY KEY,value BLOB NOT NULL)');
  db.run('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)');
@@ -58,6 +58,10 @@ function createSchema(){
  // them out of this file matters: sql.js re-exports the whole DB on every flush.
  db.run('CREATE TABLE IF NOT EXISTS attachments(id TEXT PRIMARY KEY,message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,created_at INTEGER NOT NULL)');
  db.run('CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)');
+ // v6: tags, bookmarks and the workspace operation log.
+ db.run('CREATE TABLE IF NOT EXISTS chat_tags(chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,tag TEXT NOT NULL,PRIMARY KEY(chat_id,tag))');
+ db.run('CREATE TABLE IF NOT EXISTS file_ops(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,tool TEXT NOT NULL,path TEXT,status TEXT NOT NULL,detail TEXT,snapshot TEXT,created_at INTEGER NOT NULL)');
+ db.run('CREATE INDEX IF NOT EXISTS idx_file_ops_chat ON file_ops(chat_id,created_at)');
 }
 
 function ensureColumn(table:string,column:string,decl:string){const info=db.exec(`PRAGMA table_info(${table})`)[0];const cols=info?info.values.map(v=>String(v[1])):[];if(!cols.includes(column))db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);}
@@ -93,6 +97,17 @@ function migrate(from:number){
   ensureColumn('chats','folder_id','TEXT');
   ensureColumn('chats','workspace','TEXT');
   db.run('CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY,name TEXT NOT NULL,created_at INTEGER NOT NULL)');
+ }
+ if(from<6){
+  // v6: archive + read-only workspace + per-chat todo list, message bookmarks,
+  // tags, and the file-operation log (with snapshot paths for rollback).
+  ensureColumn('chats','archived','INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('chats','workspace_readonly','INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('chats','todos','TEXT');
+  ensureColumn('messages','bookmarked','INTEGER NOT NULL DEFAULT 0');
+  db.run('CREATE TABLE IF NOT EXISTS chat_tags(chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,tag TEXT NOT NULL,PRIMARY KEY(chat_id,tag))');
+  db.run('CREATE TABLE IF NOT EXISTS file_ops(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,tool TEXT NOT NULL,path TEXT,status TEXT NOT NULL,detail TEXT,snapshot TEXT,created_at INTEGER NOT NULL)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_file_ops_chat ON file_ops(chat_id,created_at)');
  }
  db.run(`PRAGMA user_version=${SCHEMA_VERSION}`);
 }

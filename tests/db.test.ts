@@ -166,4 +166,22 @@ describe('corruption and versioning', () => {
     run('DELETE FROM folders WHERE id=?', ['f1']);
     expect(Number(one('SELECT COUNT(*) AS n FROM chats')?.n)).toBe(1);
   });
+
+  it('migrates a v5 database to v6: archive/readonly columns, tags, file_ops, bookmarks', async () => {
+    await openDatabase();
+    insertChat('c1', 'v5 chat');
+    run('INSERT INTO messages(id,chat_id,role,content,created_at) VALUES(?,?,?,?,?)', ['m1', 'c1', 'user', 'hi', 1]);
+    run('PRAGMA user_version=5');
+    saveNow();
+    await openDatabase();
+    expect(pragmaValue('user_version')).toBe(SCHEMA_VERSION);
+    const chat = one('SELECT archived,workspace_readonly,todos FROM chats WHERE id=?', ['c1']);
+    expect(chat).toEqual({ archived: 0, workspace_readonly: 0, todos: null });
+    const msg = one('SELECT bookmarked FROM messages WHERE id=?', ['m1']);
+    expect(msg).toEqual({ bookmarked: 0 });
+    run('INSERT INTO chat_tags VALUES(?,?)', ['c1', 'work']);
+    run('INSERT INTO file_ops VALUES(?,?,?,?,?,?,?,?)', ['op1', 'c1', 'write_file', 'a.txt', 'ok', null, null, 1]);
+    expect(one('SELECT tag FROM chat_tags WHERE chat_id=?', ['c1'])).toEqual({ tag: 'work' });
+    expect(one('SELECT tool FROM file_ops WHERE id=?', ['op1'])).toEqual({ tool: 'write_file' });
+  });
 });

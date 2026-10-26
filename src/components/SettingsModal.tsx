@@ -1,12 +1,12 @@
 import {useEffect,useState} from 'react';
-import {Archive,Bot,Check,FolderOpen,Keyboard,Moon,Monitor,Pencil,Plus,Shield,Sparkles,Sun,Trash2,X} from 'lucide-react';
-import type {Accent,HotkeyMap,Persona,ProviderConfig,ProviderId,UsageRow,UsageSummary} from '../../electron/shared';
+import {Archive,BarChart3,Bot,Check,FileDown,FolderOpen,Keyboard,LayoutTemplate,Moon,Monitor,Pencil,Plus,RotateCcw,Save,Shield,Sparkles,Sun,Trash2,X} from 'lucide-react';
+import type {Accent,DayUsage,HotkeyMap,Persona,PromptTemplate,ProviderConfig,ProviderId,UsageRow,UsageSummary} from '../../electron/shared';
 import {ACCENTS,PERSONA_COLORS} from '../../electron/shared';
 import type {Prefs} from '../store';
 import {providerColors} from '../store';
 import {formatCost,messageCost} from '../cost';
 
-type Tab='providers'|'appearance'|'agents'|'data';
+type Tab='providers'|'appearance'|'agents'|'data'|'stats';
 
 interface Props{
  tab:Tab;
@@ -26,6 +26,7 @@ interface Props{
  onRefreshModels:()=>Promise<void>;
  refreshingModels:boolean;
  onExport:(format:'md'|'json')=>void;
+ onExportPrepared:(format:'html'|'pdf')=>void;
  onWipe:()=>void;
  onOpenDataFolder:()=>void;
  notice:string;
@@ -93,6 +94,44 @@ const HOTKEY_LABELS:Record<keyof HotkeyMap,string>={newChat:'New conversation',o
 // Kept local to the modal; saving writes the whole personas array via onPref.
 const blankPersona=():Persona=>({id:crypto.randomUUID(),name:'',prompt:'',color:PERSONA_COLORS[0]});
 
+const blankTemplate=():PromptTemplate=>({id:crypto.randomUUID(),name:'',text:''});
+
+function TemplateEditor({template,onSave,onCancel}:{template:PromptTemplate;onSave:(t:PromptTemplate)=>void;onCancel:()=>void}){
+ const [draft,setDraft]=useState<PromptTemplate>(template);
+ return <div className="persona-editor">
+  <Field label="Name"><input value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))} placeholder="Explain like I'm five" autoFocus/></Field>
+  <Field label="Template text"><textarea rows={6} value={draft.text} onChange={e=>setDraft(d=>({...d,text:e.target.value}))} placeholder={'Explain simply:\n\n{{input}}'}/></Field>
+  <p className="field-hint"><code>{'{{input}}'}</code> is replaced by whatever is currently typed in the composer.</p>
+  <div className="settings-actions">
+   <button className="secondary-button" onClick={onCancel}>Cancel</button>
+   <button className="primary-button" disabled={!draft.name.trim()||!draft.text.trim()} onClick={()=>onSave({...draft,name:draft.name.trim()})}>Save template</button>
+  </div>
+ </div>;
+}
+
+// Daily token/cost bars for the Statistics tab — plain divs, no chart library.
+function StatsView(){
+ const [days,setDays]=useState<DayUsage[]|null>(null);
+ useEffect(()=>{let alive=true;void window.lumen.chats.usageByDay().then(d=>{if(alive)setDays(d);}).catch(()=>{if(alive)setDays([]);});return()=>{alive=false;};},[]);
+ if(days===null)return <p className="models-empty">Loading…</p>;
+ if(!days.length)return <p className="models-empty">No usage yet — statistics appear after your first replies.</p>;
+ const maxTokens=Math.max(...days.map(d=>d.promptTokens+d.completionTokens),1);
+ const priced=days.some(d=>d.cost>0);
+ return <>
+  <div className="stats-bars">
+   {days.slice(-30).map(d=>{
+    const total=d.promptTokens+d.completionTokens;
+    return <div className="stats-row" key={d.day} title={d.day+': ↑'+d.promptTokens.toLocaleString()+' ↓'+d.completionTokens.toLocaleString()+(d.cost?' · ≈'+formatCost(d.cost):'')}>
+     <small>{d.day.slice(5)}</small>
+     <div className="stats-bar"><i style={{width:Math.max(2,total/maxTokens*100)+'%'}}/></div>
+     <span>{total>=1000?(total/1000).toFixed(1)+'k':total}{d.cost?' · '+formatCost(d.cost):''}</span>
+    </div>;
+   })}
+  </div>
+  {priced&&<p className="field-hint">Costs are estimates from the provider price lists.</p>}
+ </>;
+}
+
 function PersonaEditor({persona,providers,onSave,onCancel}:{persona:Persona;providers:ProviderConfig[];onSave:(p:Persona)=>void;onCancel:()=>void}){
  const [draft,setDraft]=useState<Persona>(persona);
  const set=<K extends keyof Persona>(k:K,v:Persona[K])=>setDraft(d=>({...d,[k]:v}));
@@ -125,7 +164,7 @@ function PersonaEditor({persona,providers,onSave,onCancel}:{persona:Persona;prov
 }
 
 export default function SettingsModal(props:Props){
- const {tab,onTab,providers,providerId,model,settings,hasActiveChat,onClose,onProviderSelect,onModel,onPref,onSaveProvider,onRemoveProvider,onTestProvider,onRefreshModels,refreshingModels,onExport,onWipe,onOpenDataFolder,notice,onNotice}=props;
+ const {tab,onTab,providers,providerId,model,settings,hasActiveChat,onClose,onProviderSelect,onModel,onPref,onSaveProvider,onRemoveProvider,onTestProvider,onRefreshModels,refreshingModels,onExport,onExportPrepared,onWipe,onOpenDataFolder,notice,onNotice}=props;
  const [apiKey,setApiKey]=useState('');
  const [baseUrl,setBaseUrl]=useState('');
  const [providerName,setProviderName]=useState('');
@@ -134,6 +173,7 @@ export default function SettingsModal(props:Props){
  const [confirmWipe,setConfirmWipe]=useState(false);
  const [usage,setUsage]=useState<UsageSummary|null>(null);
  const [editingPersona,setEditingPersona]=useState<Persona|null>(null);
+ const [editingTemplate,setEditingTemplate]=useState<PromptTemplate|null>(null);
  const provider=providers.find(p=>p.id===providerId);
  const pinned=PINNED_IDS.has(providerId);
 
@@ -188,10 +228,10 @@ export default function SettingsModal(props:Props){
   <header><div><div className="eyebrow">PREFERENCES</div><h2>Settings</h2></div>
    <button onClick={onClose} aria-label="Close settings"><X size={17}/></button></header>
   <div className="settings-layout">
-   <nav className="settings-nav">{(['providers','appearance','agents','data'] as const).map(t=>
+   <nav className="settings-nav">{(['providers','appearance','agents','stats','data'] as const).map(t=>
     <button key={t} className={tab===t?'active':''} onClick={()=>onTab(t)}>
-     {t==='providers'?<Sparkles size={15}/>:t==='appearance'?<Sun size={15}/>:t==='agents'?<Bot size={15}/>:<Archive size={15}/>}
-     <span>{t==='providers'?'Providers':t==='appearance'?'Appearance':t==='agents'?'Personas':'Data & privacy'}</span>
+     {t==='providers'?<Sparkles size={15}/>:t==='appearance'?<Sun size={15}/>:t==='agents'?<Bot size={15}/>:t==='stats'?<BarChart3 size={15}/>:<Archive size={15}/>}
+     <span>{t==='providers'?'Providers':t==='appearance'?'Appearance':t==='agents'?'Personas':t==='stats'?'Statistics':'Data & privacy'}</span>
     </button>)}</nav>
    <div className="settings-page">
     {tab==='providers'?<>
@@ -247,6 +287,27 @@ export default function SettingsModal(props:Props){
      <Field label="Max response tokens"><input type="number" min="128" max="32000" value={settings.maxTokens} onChange={e=>void onPref('maxTokens',Number(e.target.value))}/></Field>
      <Field label="Top P"><input type="number" min="0" max="1" step="0.05" value={settings.topP} onChange={e=>void onPref('topP',Number(e.target.value))}/></Field>
      <Field label="System prompt"><textarea rows={4} value={settings.systemPrompt} onChange={e=>void onPref('systemPrompt',e.target.value)}/></Field>
+     <ToggleRow title="Compact mode" hint="Smaller paddings and margins — more text on screen." checked={settings.compactMode} onChange={v=>void onPref('compactMode',v)}/>
+     <Field label="Default workspace folder">
+      <div className="inline-row">
+       <input value={settings.defaultWorkspace} readOnly placeholder="None — attach per chat from the toolbar" aria-label="Default workspace folder"/>
+       <button className="secondary-button" onClick={()=>{void window.lumen.app.pickFolder('Choose the default workspace folder').then(p=>{if(p)void onPref('defaultWorkspace',p);});}}>Browse…</button>
+       {settings.defaultWorkspace&&<button className="secondary-button" onClick={()=>void onPref('defaultWorkspace','')}>Clear</button>}
+      </div>
+      <p className="field-hint">Chats without their own workspace use this folder for file tools. Writes still ask for approval.</p>
+     </Field>
+     <Field label="Custom CSS">
+      <div className="inline-row">
+       <input value={settings.customCss?settings.customCss.length+' characters loaded':''} readOnly placeholder="No custom styles" aria-label="Custom CSS status"/>
+       <button className="secondary-button" onClick={()=>{
+        const input=document.createElement('input');input.type='file';input.accept='.css,text/css';
+        input.onchange=()=>{const f=input.files?.[0];if(!f)return;if(f.size>100*1024){onNotice('CSS file is too large (max 100 KB)');return;}void f.text().then(t=>{void onPref('customCss',t);onNotice('Custom theme applied');});};
+        input.click();
+       }}>Load .css…</button>
+       {settings.customCss&&<button className="secondary-button" onClick={()=>void onPref('customCss','')}>Remove</button>}
+      </div>
+      <p className="field-hint">A .css file injected into the app window — restyle anything. It cannot access your data.</p>
+     </Field>
      <h3><Monitor size={14}/> System</h3>
      <ToggleRow title="Keep running in the tray" hint="Closing the window hides it; quit from the tray icon." checked={settings.minimizeToTray} onChange={v=>void onPref('minimizeToTray',v)}/>
      <ToggleRow title="Launch at sign-in" hint="Start Lumen automatically when you log into Windows." checked={settings.autoStart} onChange={v=>void onPref('autoStart',v)}/>
@@ -282,6 +343,32 @@ export default function SettingsModal(props:Props){
         <button className="primary-button" onClick={()=>setEditingPersona(blankPersona())}><Plus size={14}/> New persona</button>
        </div>
       </>}
+     <h3><LayoutTemplate size={14}/> Prompt templates</h3>
+     <p>Reusable prompts; {'{{input}}'} is replaced by your current draft. Pick one from the composer's template button or with /template N.</p>
+     {editingTemplate
+      ?<TemplateEditor template={editingTemplate} onCancel={()=>setEditingTemplate(null)}
+        onSave={t=>{
+         const list=settings.templates.filter(x=>x.id!==t.id);
+         void onPref('templates',[...list,t]);setEditingTemplate(null);onNotice('Template saved');
+        }}/>
+      :<>
+       <div className="model-list">
+        {settings.templates.map(t=><div className="persona-row" key={t.id}>
+         <LayoutTemplate size={13}/>
+         <span className="persona-name">{t.name}</span>
+         <small className="persona-active">{t.text.slice(0,40)}{t.text.length>40?'…':''}</small>
+         <button title={'Edit '+t.name} aria-label={'Edit '+t.name} onClick={()=>setEditingTemplate(t)}><Pencil size={13}/></button>
+         <button title={'Delete '+t.name} aria-label={'Delete '+t.name} onClick={()=>void onPref('templates',settings.templates.filter(x=>x.id!==t.id))}><Trash2 size={13}/></button>
+        </div>)}
+        {!settings.templates.length&&<div className="models-empty">No templates yet. Create one to reuse a prompt in one click.</div>}
+       </div>
+       <div className="settings-actions">
+        <button className="primary-button" onClick={()=>setEditingTemplate(blankTemplate())}><Plus size={14}/> New template</button>
+       </div>
+      </>}
+    </>:tab==='stats'?<>
+     <h3>Statistics</h3><p>Token usage per day across all providers (assistant replies).</p>
+     <StatsView/>
     </>:<>
      <h3>Data & privacy</h3><p>Your conversations and preferences stay on this device.</p>
      <div className="privacy-row"><Shield size={17}/><div><b>Local-first storage</b><small>Chat history stored in local SQLite.</small></div><Check size={14}/></div>
@@ -312,8 +399,16 @@ export default function SettingsModal(props:Props){
      {hasActiveChat&&<div className="settings-actions">
       <button className="secondary-button" onClick={()=>onExport('md')}>Export Markdown</button>
       <button className="secondary-button" onClick={()=>onExport('json')}>Export JSON</button>
+      <button className="secondary-button" onClick={()=>onExportPrepared('html')}><FileDown size={14}/> Export HTML</button>
+      <button className="secondary-button" onClick={()=>onExportPrepared('pdf')}><FileDown size={14}/> Export PDF</button>
       <button className="secondary-button" onClick={onOpenDataFolder}><FolderOpen size={14}/> Open data folder</button>
      </div>}
+     <h3><Save size={14}/> Backup</h3>
+     <p>Back up the whole database and attachments, or restore from an earlier backup file. Restoring restarts the app.</p>
+     <div className="settings-actions">
+      <button className="secondary-button" onClick={()=>{void window.lumen.data.backup().then(p=>onNotice(p?'Backup saved to '+p:'Backup cancelled')).catch(e=>onNotice(e instanceof Error?e.message:'Backup failed'));}}><Save size={14}/> Back up now…</button>
+      <button className="secondary-button" onClick={()=>{void window.lumen.data.restore().catch(e=>onNotice(e instanceof Error?e.message:'Restore failed'));}}><RotateCcw size={14}/> Restore from backup…</button>
+     </div>
      {confirmWipe
       ?<div className="confirm-inline" role="alertdialog" aria-label="Confirm deleting all data">
         <p>This permanently deletes every conversation, message and setting on this device. Encrypted API keys are kept. This cannot be undone.</p>

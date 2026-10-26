@@ -1,8 +1,8 @@
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
-import {AlertTriangle,FolderOpen,GitFork,PanelLeftClose,Settings,Shield,X} from 'lucide-react';
+import {AlertTriangle,Archive,CheckSquare,FileClock,FolderOpen,GitFork,ListChecks,Maximize2,Minimize2,PanelLeftClose,Pin,Settings,Shield,Sparkles,X} from 'lucide-react';
 import {useApp} from './store';
 import type {PendingImage,Prefs,State,StreamState} from './store';
-import type {Chat,ChatChunk,Folder,Message,MessageVariant,ProviderConfig,ProviderId} from '../electron/shared';
+import type {Chat,ChatChunk,FileOp,Folder,Message,MessageVariant,ProviderConfig,ProviderId,TodoItem} from '../electron/shared';
 import {IMAGE_MIMES,MAX_ATTACHMENT_BYTES,MAX_IMAGE_ATTACHMENTS} from '../electron/shared';
 import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
@@ -10,8 +10,9 @@ import Welcome from './components/Welcome';
 import MessageList from './components/MessageList';
 import Composer from './components/Composer';
 import SettingsModal from './components/SettingsModal';
+import {renderMarkdown} from './markdown';
 
-type Tab='providers'|'appearance'|'agents'|'data';
+type Tab='providers'|'appearance'|'agents'|'data'|'stats';
 // Request params are taken from preferences; `theme` is deliberately not forwarded.
 // A selected persona overrides the system prompt and (when pinned) the temperature.
 const requestParams=(s:Prefs)=>{
@@ -84,6 +85,20 @@ export default function App(){
  // at a time by the queue-flush effect below when that chat's stream settles.
  const [queues,setQueues]=useState<Record<string,string[]>>({});
  const queuesRef=useRef(queues);
+ // Batch 5 UI state: focus mode (sidebar/toolbar hidden), always-on-top window,
+ // per-chat todo checklist + workspace activity panels, summarize modal, unread
+ // badges for replies that finished while another chat was open.
+ const [focusMode,setFocusMode]=useState(false);
+ const [alwaysOnTop,setAlwaysOnTop]=useState(false);
+ const [todos,setTodos]=useState<TodoItem[]>([]);
+ const [fileOps,setFileOps]=useState<FileOp[]>([]);
+ const [showFileOps,setShowFileOps]=useState(false);
+ const [showTodos,setShowTodos]=useState(false);
+ const [summary,setSummary]=useState<string|null>(null);
+ const [summarizing,setSummarizing]=useState(false);
+ const [unread,setUnread]=useState<Set<string>>(new Set());
+ // Counts replies that finished while the window was hidden — "while you were away".
+ const awayCount=useRef(0);
 
  const active=chats.find(c=>c.id===activeId);
  const stream=activeId?streams[activeId]:undefined;
@@ -158,6 +173,9 @@ export default function App(){
   const nextErrors={...s.errors};
   if(d.error)nextErrors[chatId]=d.error;else delete nextErrors[chatId];
   set({streams:nextStreams,pending:nextPending,errors:nextErrors});
+  // Unread badge: a reply finished for a chat the user is not looking at.
+  if(!d.error&&chatId!==useApp.getState().activeId){setUnread(prev=>{const n=new Set(prev);n.add(chatId);return n;});}
+  if(document.hidden)awayCount.current+=1;
   // A turn just archived or replaced an answer. Clearing the variant cache outright
   // left an OPEN History panel reading "No previous answers kept" while its own button
   // said "History (3)", so re-fetch only the messages whose panels are loaded.
@@ -315,6 +333,7 @@ export default function App(){
  },[set]);
 
  const openChat=useCallback((chat:Chat)=>{
+  setUnread(prev=>{if(!prev.has(chat.id))return prev;const n=new Set(prev);n.delete(chat.id);return n;});
   if(chat.id===useApp.getState().activeId)return;
   set({activeId:chat.id,providerId:chat.providerId,model:chat.model});
   setVariants({});
@@ -390,6 +409,112 @@ export default function App(){
   await window.lumen.chats.clearWorkspace(id);
   set({chats:useApp.getState().chats.map(c=>c.id===id?{...c,workspace:null}:c)});
  },[set]);
+
+ // ---- batch 5: archive / read-only / tags / bookmarks ------------------------------
+ const toggleArchived=useCallback(async(chat:Chat)=>{
+  await window.lumen.chats.setArchived(chat.id,!chat.archived);
+  const cs=await window.lumen.chats.list();set({chats:cs});
+  // Archiving the open chat closes it (it disappears from the default list).
+  if(!chat.archived&&chat.id===useApp.getState().activeId){
+   const next=cs.find(c=>!c.archived);set({activeId:next?.id??null,messages:[]});if(next)await load(next.id);
+  }
+ },[load,set]);
+
+ const toggleReadonly=useCallback(async()=>{
+  const s=useApp.getState();const chat=s.chats.find(c=>c.id===s.activeId);if(!chat)return;
+  await window.lumen.chats.setReadonly(chat.id,!chat.workspaceReadonly);
+  set({chats:s.chats.map(c=>c.id===chat.id?{...c,workspaceReadonly:chat.workspaceReadonly?0:1}:c)});
+  flash(chat.workspaceReadonly?'Read-only mode off — writes will ask for approval':'Read-only mode on — the model cannot change files in this chat');
+ },[flash,set]);
+
+ const setTags=useCallback(async(chatId:string,tags:string[])=>{
+  await window.lumen.chats.setTags(chatId,tags);set({chats:await window.lumen.chats.list()});
+ },[set]);
+
+ const toggleBookmark=useCallback(async(msg:Message)=>{
+  await window.lumen.chats.bookmarkMessage(msg.id,!msg.bookmarked);
+  set({messages:useApp.getState().messages.map(m=>m.id===msg.id?{...m,bookmarked:m.bookmarked?0:1}:m)});
+ },[set]);
+
+ // Summarize: main condenses the transcript; the user can start a fresh chat from it.
+ const runSummarize=useCallback(async()=>{
+  const id=useApp.getState().activeId;if(!id||summarizing)return;
+  setSummarizing(true);
+  try{setSummary(await window.lumen.chats.summarize(id));}
+  catch(e){flash(e instanceof Error?e.message:'Could not summarize this chat');}
+  finally{setSummarizing(false);}
+ },[flash,summarizing]);
+
+ const newChatFromSummary=useCallback(async()=>{
+  if(!summary)return;
+  const text=summary;setSummary(null);
+  await newChat();
+  setDraft('Here is the summary of our previous conversation. Continue from it:\n\n'+text);
+  input.current?.focus();
+ },[summary,newChat]);
+
+ // Export to HTML/PDF: the document is built here (the markdown pipeline lives in the
+ // renderer); main only saves the file or prints it.
+ const buildChatHtml=useCallback((chat:Chat,msgs:Message[])=>{
+  const esc=(s:string)=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const body=msgs.map(m=>'<section class="msg '+m.role+'"><header>'+(m.role==='user'?'You':esc(m.model??'Assistant'))+' <time>'+new Date(m.createdAt).toLocaleString()+'</time></header><div class="content">'+renderMarkdown(m.content)+'</div></section>').join('\n');
+  return '<!doctype html><html><head><meta charset="utf-8"><title>'+esc(chat.title)+'</title><style>'
+   +'body{font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;color:#1c1c1e;background:#fff}'
+   +'h1{font-size:22px}.msg{margin:18px 0;padding:14px 16px;border-radius:12px;background:#f5f5f7}.msg.user{background:#e8f0fe}'
+   +'.msg header{font-size:12px;color:#666;margin-bottom:6px}.msg time{opacity:.7;margin-left:6px}'
+   +'pre{background:#16181d;color:#e6e6e6;padding:12px;border-radius:8px;overflow-x:auto}code{font-family:Consolas,Menlo,monospace;font-size:13px}'
+   +'table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:4px 10px}blockquote{border-left:3px solid #bbb;margin:0;padding-left:12px;color:#555}'
+   +'</style></head><body><h1>'+esc(chat.title)+'</h1>'+body+'</body></html>';
+ },[]);
+
+ const exportPrepared=useCallback(async(format:'html'|'pdf')=>{
+  const s=useApp.getState();const chat=s.chats.find(c=>c.id===s.activeId);if(!chat||!s.messages.length)return;
+  try{const path=await window.lumen.chats.exportPrepared(chat.id,format,buildChatHtml(chat,s.messages));flash(path?'Saved to '+path:'Export cancelled');}
+  catch(e){flash(e instanceof Error?e.message:'Export failed');}
+ },[buildChatHtml,flash]);
+
+ // Slash commands: /model X, /persona Y, /clear, /template N, /summarize, /readonly.
+ // Returns true when the input was consumed as a command (Composer then skips send).
+ const handleSlash=useCallback((raw:string)=>{
+  const [cmd,...rest]=raw.slice(1).split(/\s+/);const arg=rest.join(' ').trim();
+  const s=useApp.getState();
+  switch(cmd.toLowerCase()){
+   case 'model':{
+    const p=s.providers.find(x=>x.id===s.providerId);
+    const m=p?.models.find(x=>x.toLowerCase().includes(arg.toLowerCase()));
+    if(m){set({model:m});flash('Model → '+m);}else flash('Model "'+arg+'" not found for '+s.providerId);
+    return true;
+   }
+   case 'persona':{
+    const persona=s.settings.personas.find(x=>x.name.toLowerCase().includes(arg.toLowerCase()));
+    if(persona||!arg){const id=persona?.id??'';set({settings:{...s.settings,personaId:id}});void window.lumen.settings.save({personaId:id});flash(persona?'Persona → '+persona.name:'Persona cleared');}
+    else flash('No persona named "'+arg+'"');
+    return true;
+   }
+   case 'template':{
+    const t=s.settings.templates[Number(arg)-1]??s.settings.templates.find(x=>x.name.toLowerCase().includes(arg.toLowerCase()));
+    if(t){setDraft(t.text.replace('{{input}}',''));input.current?.focus();}else flash('Template "'+arg+'" not found');
+    return true;
+   }
+   case 'clear':void newChat();return true;
+   case 'summarize':void runSummarize();return true;
+   case 'readonly':void toggleReadonly();return true;
+   case 'help':flash('Commands: /model · /persona · /template N · /clear · /summarize · /readonly');return true;
+   default:return false;
+  }
+ },[flash,newChat,runSummarize,set,toggleReadonly]);
+
+ const toggleAlwaysOnTop=useCallback(()=>{
+  const next=!alwaysOnTop;setAlwaysOnTop(next);
+  window.lumen.window.setAlwaysOnTop(next);
+ },[alwaysOnTop]);
+
+ const rollbackOp=useCallback(async(opId:string)=>{
+  try{
+   const r=await window.lumen.chats.rollbackOp(opId);flash(r.message);
+   const id=useApp.getState().activeId;if(id)setFileOps(await window.lumen.chats.fileOps(id));
+  }catch(e){flash(e instanceof Error?e.message:'Rollback failed');}
+ },[flash]);
 
  const pref=useCallback(async<K extends keyof Prefs>(key:K,value:Prefs[K])=>{
   const s=useApp.getState().settings;set({settings:{...s,[key]:value}});
@@ -570,6 +695,51 @@ export default function App(){
   set({chats:useApp.getState().chats.map(c=>c.id===id?{...c,title}:c)});
  }),[set]);
 
+ // ---- custom CSS theme: injected as a <style> tag, re-applied when the setting changes
+ useEffect(()=>{
+  let el=document.getElementById('lumen-custom-css') as HTMLStyleElement|null;
+  if(!settings.customCss){el?.remove();return;}
+  if(!el){el=document.createElement('style');el.id='lumen-custom-css';document.head.appendChild(el);}
+  el.textContent=settings.customCss;
+ },[settings.customCss]);
+
+ // ---- per-chat todo checklist: load on chat switch, live-updated by todo_write
+ useEffect(()=>{
+  if(!activeId){setTodos([]);return;}
+  void window.lumen.chats.todos(activeId).then(setTodos).catch(()=>setTodos([]));
+ },[activeId]);
+ useEffect(()=>window.lumen.chats.onTodos(({chatId,todos:list})=>{
+  if(chatId===useApp.getState().activeId)setTodos(list);
+ }),[]);
+
+ // ---- workspace activity log (loaded lazily when the panel opens)
+ useEffect(()=>{
+  if(!showFileOps||!activeId)return;
+  void window.lumen.chats.fileOps(activeId).then(setFileOps).catch(()=>setFileOps([]));
+ },[showFileOps,activeId]);
+ // A finished stream may have touched files — refresh an open panel.
+ useEffect(()=>{
+  if(!showFileOps||!activeId||streams[activeId])return;
+  void window.lumen.chats.fileOps(activeId).then(setFileOps).catch(()=>{});
+ },[showFileOps,activeId,streams]);
+
+ // ---- "while you were away": count replies that finished in the background
+ useEffect(()=>{
+  const onFocus=()=>{
+   if(awayCount.current>0){flash('While you were away: '+awayCount.current+' '+(awayCount.current===1?'reply':'replies')+' finished');awayCount.current=0;}
+  };
+  window.addEventListener('focus',onFocus);
+  return()=>window.removeEventListener('focus',onFocus);
+ },[flash]);
+
+ // Focus mode: Escape exits it.
+ useEffect(()=>{
+  if(!focusMode)return;
+  const onKey=(e:KeyboardEvent)=>{if(e.key==='Escape')setFocusMode(false);};
+  window.addEventListener('keydown',onKey);
+  return()=>window.removeEventListener('keydown',onKey);
+ },[focusMode]);
+
  // ---- keyboard shortcuts (rebindable in Settings → Appearance)
  useEffect(()=>{
   const onKey=(e:KeyboardEvent)=>{
@@ -586,13 +756,13 @@ export default function App(){
   return()=>window.removeEventListener('keydown',onKey);
  },[newChatAndFocus,showSettings,toggleSidebar]);
 
- return <div className="app-shell" data-theme={settings.theme} data-accent={settings.accent}>
+ return <div className={'app-shell'+(settings.compactMode?' compact':'')+(focusMode?' focus':'')} data-theme={settings.theme} data-accent={settings.accent}>
   <Titlebar busy={anyBusy}/>
   <div className="layout">
-   {showSidebar&&<Sidebar chats={chats} activeId={activeId} providers={providers} folders={folders} busyIds={busyIds} needsSetup={needsSetup}
+   {showSidebar&&!focusMode&&<Sidebar chats={chats} activeId={activeId} providers={providers} folders={folders} busyIds={busyIds} needsSetup={needsSetup} unread={unread}
      newChatHotkey={settings.hotkeys.newChat}
      onNew={newChatAndFocus} onOpen={openChat} onDelete={removeChat} onRename={renameChat} onOpenSettings={openProvidersTab}
-     onTogglePin={togglePin} onMoveFolder={moveToFolder}
+     onTogglePin={togglePin} onMoveFolder={moveToFolder} onToggleArchived={toggleArchived} onSetTags={setTags}
      onCreateFolder={createFolder} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder}
      onOpenHit={openChatAt}/>}
    <main className="main-panel">
@@ -619,11 +789,37 @@ export default function App(){
        onClick={()=>void pickWorkspace()}>
        <FolderOpen size={12}/>{active.workspace?active.workspace.split(/[\\/]/).filter(Boolean).pop():'Workspace'}</button>}
       {active?.workspace&&<button className="icon-btn" aria-label="Detach workspace folder" title="Detach workspace" onClick={()=>void clearWorkspace()}><X size={12}/></button>}
+      {active?.workspace&&<button className={'branch-link'+(active.workspaceReadonly?' workspace-on':'')}
+       title={active.workspaceReadonly?'Read-only mode is ON: the model cannot write files or run commands. Click to allow writes (with approval).':'Read-only mode is off. Click to forbid all file writes in this chat.'}
+       onClick={()=>void toggleReadonly()}>
+       <Shield size={12}/>{active.workspaceReadonly?'Read-only':'Writable'}</button>}
      </div>
-     <div className="toolbar-right"><span className="private-label"><Shield size={13}/>Private by design</span>
+     <div className="toolbar-right">
+      {active&&<>
+       {!!todos.length&&<button className={'icon-btn'+(showTodos?' active':'')} aria-label="Task checklist" title="Task checklist (todo_write)" onClick={()=>setShowTodos(v=>!v)}><ListChecks size={16}/></button>}
+       {active.workspace&&<button className={'icon-btn'+(showFileOps?' active':'')} aria-label="Workspace activity" title="Workspace activity — files the model read, wrote, or was refused" onClick={()=>setShowFileOps(v=>!v)}><FileClock size={16}/></button>}
+       {messages.length>=4&&<button className="icon-btn" aria-label="Summarize this chat" title="Summarize this chat (start fresh with the summary)" disabled={summarizing} onClick={()=>void runSummarize()}><Sparkles size={16}/></button>}
+       <button className="icon-btn" aria-label={active.archived?'Unarchive this chat':'Archive this chat'} title={active.archived?'Unarchive':'Archive (hide without deleting)'} onClick={()=>void toggleArchived(active)}><Archive size={16}/></button>
+      </>}
+      <button className={'icon-btn'+(focusMode?' active':'')} aria-label="Focus mode" title="Focus mode — hide everything but the conversation (Esc to exit)" onClick={()=>setFocusMode(v=>!v)}>{focusMode?<Minimize2 size={16}/>:<Maximize2 size={16}/>}</button>
+      <button className={'icon-btn'+(alwaysOnTop?' active':'')} aria-label="Always on top" title="Always on top" onClick={toggleAlwaysOnTop}><Pin size={16}/></button>
+      <span className="private-label"><Shield size={13}/>Private by design</span>
       <button className="icon-btn" aria-label="Settings" onClick={openProvidersTab}><Settings size={16}/></button>
      </div>
     </div>
+    {/* Batch-5 side panels: the model's checklist and the workspace activity log. */}
+    {showTodos&&!!todos.length&&<aside className="side-panel" aria-label="Task checklist">
+     <header><CheckSquare size={13}/> Tasks</header>
+     <ul>{todos.map((t,i)=><li key={i} className={t.done?'done':''}><input type="checkbox" checked={t.done} readOnly tabIndex={-1}/><span>{t.text}</span></li>)}</ul>
+    </aside>}
+    {showFileOps&&<aside className="side-panel" aria-label="Workspace activity">
+     <header><FileClock size={13}/> Workspace activity</header>
+     {fileOps.length?<ul>{fileOps.map(op=><li key={op.id} className={'op-'+op.status}>
+       <div><b>{op.tool}</b>{op.path&&<code>{op.path}</code>}</div>
+       <small>{new Date(op.createdAt).toLocaleTimeString()} · {op.status}{op.detail&&' — '+op.detail.slice(0,120)}</small>
+       {op.snapshot&&op.status==='ok'&&op.tool!=='rollback'&&<button className="op-rollback" onClick={()=>void rollbackOp(op.id)}>Roll back</button>}
+      </li>)}</ul>:<p className="templates-empty">No operations yet</p>}
+    </aside>}
     <section className="conversation" ref={conversation} onScroll={onScroll}>
      {messages.length===0&&!stream&&!busy
       ?<Welcome needsSetup={needsSetup} onSetup={openProvidersTab} onPick={pickSuggestion}/>
@@ -631,23 +827,33 @@ export default function App(){
         status={stream?.status} highlightId={highlightId}
         variants={variants} providers={providers} bottomRef={bottom} onCopy={copy} onRegenerate={regenerate}
         onContinue={continueMessage} onDeleteMessage={deleteMessage} onEditMessage={commitEdit} onRetry={regenerate}
-        onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat}/>}
+        onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat} onBookmark={toggleBookmark}/>}
     </section>
     {!atBottom&&(messages.length>0||busy)&&<button className="scroll-bottom" aria-label="Scroll to latest" onClick={scrollToBottom}>↓</button>}
     <Composer ref={input} draft={draft} busy={busy} needsSetup={needsSetup} providers={providers} providerId={providerId} model={model}
       images={images} onAddImages={addImages} onRemoveImage={removeImage}
       personas={settings.personas} personaId={settings.personaId} onPersona={id=>void pref('personaId',id)}
+      templates={settings.templates} onSlash={handleSlash}
       history={history} queued={activeId?queues[activeId]??[]:[]} onClearQueue={clearQueue} onEnhance={enhanceDraft}
       onDraft={setDraft} onSend={send} onStop={stopActive} onOpenSettings={openProvidersTab}
       onProvider={changeProvider} onModel={selectModel}/>
    </main>
   </div>
+  {/* Summarize modal: the condensed transcript with a one-click fresh start. */}
+  {summary&&<div className="modal-backdrop" role="dialog" aria-label="Chat summary" onClick={()=>setSummary(null)}>
+   <div className="modal summary-modal" onClick={e=>e.stopPropagation()}>
+    <header><h2><Sparkles size={16}/> Summary</h2><button className="icon-btn" aria-label="Close" onClick={()=>setSummary(null)}><X size={16}/></button></header>
+    <div className="summary-body markdown-body" dangerouslySetInnerHTML={{__html:renderMarkdown(summary)}}/>
+    <footer><button className="btn-secondary" onClick={()=>setSummary(null)}>Close</button>
+     <button className="btn-primary" onClick={()=>void newChatFromSummary()}>New chat from summary</button></footer>
+   </div>
+  </div>}
   {showSettings&&<SettingsModal tab={tab} onTab={setTab} providers={providers} providerId={providerId} model={model}
     settings={settings} hasActiveChat={!!active} onClose={closeSettings}
     onProviderSelect={changeProvider} onModel={selectModel} onPref={pref}
     onSaveProvider={saveProvider} onRemoveProvider={removeProvider} onTestProvider={testProvider}
     onRefreshModels={refreshModels} refreshingModels={refreshingModels}
-    onExport={exportChat} onWipe={wipeData} onOpenDataFolder={openDataFolder}
+    onExport={exportChat} onExportPrepared={exportPrepared} onWipe={wipeData} onOpenDataFolder={openDataFolder}
     notice={notice} onNotice={flash}/>}
   {notice&&!showSettings&&<div className="toast" role="status">{notice}</div>}
  </div>;

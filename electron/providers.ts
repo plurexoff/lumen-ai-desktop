@@ -1,5 +1,5 @@
-import type { ChatRequest, FinishReason, HotkeyMap, ModelPrice, NewAttachment, Persona, PricingMap, ProviderConfig, ProviderId } from './shared';
-import { ACCENTS, DEFAULT_HOTKEYS, IMAGE_MIMES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_PERSONAS, PERSONA_COLORS } from './shared';
+import type { ChatRequest, FinishReason, HotkeyMap, ModelPrice, NewAttachment, Persona, PricingMap, PromptTemplate, ProviderConfig, ProviderId } from './shared';
+import { ACCENTS, DEFAULT_HOTKEYS, IMAGE_MIMES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_PERSONAS, MAX_TEMPLATES, PERSONA_COLORS } from './shared';
 
 export interface ResolvedProvider { id: string; name: string; url: string; key: string; }
 // `images` are base64 payloads inlined into the provider request (all supported
@@ -393,6 +393,34 @@ export function clampSettings(input: Record<string, unknown>): Record<string, un
  if ('hotkeys' in input) {
   const h = normalizeHotkeys(input.hotkeys);
   if (h) out.hotkeys = h;
+ }
+ if ('templates' in input) {
+  const templates = validateTemplates(input.templates);
+  if (templates) out.templates = templates;
+ }
+ // defaultWorkspace is a directory the user picks through a native dialog; the
+ // existence check happens when it is used, not when it is stored.
+ if ('defaultWorkspace' in input) out.defaultWorkspace = typeof input.defaultWorkspace === 'string' && input.defaultWorkspace.length <= 500 ? input.defaultWorkspace : '';
+ // Custom CSS is injected into the renderer verbatim — it can restyle anything in
+ // the app window, which is exactly the point of the feature; it cannot reach the
+ // main process (no IPC surface is exposed to CSS).
+ if ('customCss' in input) out.customCss = typeof input.customCss === 'string' ? input.customCss.slice(0, 100_000) : '';
+ if ('compactMode' in input) out.compactMode = input.compactMode === true;
+ return out;
+}
+
+// Prompt templates: {{input}} is replaced by the current draft in the composer.
+export function validateTemplates(input: unknown): PromptTemplate[] | undefined {
+ if (!Array.isArray(input)) return undefined;
+ const out: PromptTemplate[] = [];
+ for (const t of input.slice(0, MAX_TEMPLATES)) {
+  if (!t || typeof t !== 'object') continue;
+  const src = t as Record<string, unknown>;
+  const id = typeof src.id === 'string' && src.id && src.id.length <= 100 ? src.id : '';
+  const name = typeof src.name === 'string' ? src.name.trim().slice(0, 60) : '';
+  const text = typeof src.text === 'string' ? src.text.slice(0, 16384) : '';
+  if (!id || !name || !text.trim()) continue;
+  out.push({ id, name, text });
  }
  return out;
 }
