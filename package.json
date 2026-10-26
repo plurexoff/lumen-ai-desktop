@@ -1,0 +1,70 @@
+{
+  "name": "lumen-ai-desktop",
+  "version": "1.1.0",
+  "private": true,
+  "license": "MIT",
+  "author": "Lumen AI contributors",
+  "description": "Secure multi-provider AI desktop client",
+  "main": "dist-electron/main.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "predev": "npm run build:electron",
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "npm run build:renderer && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "dist:win": "npm run build && electron-builder --win nsis --config.asar=false -c.win.signAndEditExecutable=false"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.17",
+    "lucide-react": "^0.468.0",
+    "marked": "^15.0.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sql.js": "^1.13.0",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.13.4",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/sql.js": "^1.4.9",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^6.1.0",
+    "vitest": "^5.0.5",
+    "wait-on": "^8.0.2"
+  },
+  "build": {
+    "appId": "com.lumen.ai.desktop",
+    "productName": "Lumen AI",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "node_modules/sql.js/**",
+      "package.json"
+    ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}
