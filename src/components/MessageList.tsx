@@ -1,8 +1,9 @@
 import {memo,useState} from 'react';
-import type {RefObject} from 'react';
+import type {MouseEvent,RefObject} from 'react';
 import {Activity,Brain,Check,Copy,CornerDownLeft,GitFork,Pencil,RefreshCw,Sparkles,Trash2} from 'lucide-react';
-import type {Message,MessageVariant} from '../../electron/shared';
+import type {Message,MessageVariant,ProviderConfig} from '../../electron/shared';
 import {useMarkdownHtml,useThrottledMarkdown} from '../useMarkdown';
+import {formatCost,messageCost} from '../cost';
 
 interface Props{
  messages:Message[];
@@ -11,6 +12,7 @@ interface Props{
  reasoning:string;
  error:string;
  variants:Record<string,MessageVariant[]>;
+ providers:ProviderConfig[];
  bottomRef:RefObject<HTMLDivElement>;
  onCopy:(text:string)=>void;
  onRegenerate:()=>void;
@@ -27,9 +29,36 @@ interface Props{
 // memoized row a fresh reference every render (which would defeat React.memo).
 const NO_VARIANTS:MessageVariant[]=[];
 
-function Usage({promptTokens,completionTokens}:{promptTokens?:number|null;completionTokens?:number|null}){
+// Rendered markdown plus click delegation for the per-block Copy buttons that
+// renderMarkdown injects into fenced code blocks. The code text is read from the
+// DOM (never an attribute), and the button flips to "Copied" as feedback.
+function Markdown({html}:{html:string}){
+ const onClick=(e:MouseEvent)=>{
+  const btn=(e.target as HTMLElement).closest('.code-copy');
+  if(!btn)return;
+  const code=btn.closest('.code-block')?.querySelector('pre code');
+  if(!code)return;
+  void navigator.clipboard.writeText(code.textContent??'').then(()=>{
+   btn.textContent='Copied';
+   setTimeout(()=>{btn.textContent='Copy';},1200);
+  });
+ };
+ return <div className="markdown" onClick={onClick} dangerouslySetInnerHTML={{__html:html}}/>;
+}
+
+// Day separators inside the feed ("Today" / "Yesterday" / date) — long chats are
+// much easier to scan. Comparison is by local calendar day, not 24h distance.
+const dayStart=(ts:number)=>{const d=new Date(ts);return new Date(d.getFullYear(),d.getMonth(),d.getDate()).getTime();};
+function dayLabel(ts:number):string{
+ const diff=Math.round((dayStart(Date.now())-dayStart(ts))/86400000);
+ if(diff===0)return 'Today';
+ if(diff===1)return 'Yesterday';
+ return new Date(ts).toLocaleDateString([],{year:'numeric',month:'long',day:'numeric'});
+}
+
+function Usage({promptTokens,completionTokens,cost}:{promptTokens?:number|null;completionTokens?:number|null;cost?:string}){
  if(!promptTokens&&!completionTokens)return null;
- return <small className="token-usage">{promptTokens?'↑ '+promptTokens.toLocaleString():''}{promptTokens&&completionTokens?' · ':''}{completionTokens?'↓ '+completionTokens.toLocaleString():''} tokens</small>;
+ return <small className="token-usage">{promptTokens?'↑ '+promptTokens.toLocaleString():''}{promptTokens&&completionTokens?' · ':''}{completionTokens?'↓ '+completionTokens.toLocaleString():''} tokens{cost?' · ≈'+cost:''}</small>;
 }
 
 function Reasoning({text,collapsedByDefault,live}:{text:string;collapsedByDefault?:boolean;live?:boolean}){
@@ -39,7 +68,7 @@ function Reasoning({text,collapsedByDefault,live}:{text:string;collapsedByDefaul
  if(!text)return null;
  return <div className="reasoning-block">
   <button className="reasoning-toggle" onClick={()=>setOpen(o=>!o)}><Brain size={12}/><span>Thinking</span><i>{open?'▾':'▸'}</i></button>
-  {open&&<div className="markdown reasoning-text" dangerouslySetInnerHTML={{__html:html}}/>}
+  {open&&<div className="reasoning-text"><Markdown html={html}/></div>}
  </div>;
 }
 
@@ -57,8 +86,8 @@ function Variants({list,onRestore,onClose}:{list:MessageVariant[];onRestore:(id:
 // One row per message. Memoized + markdown parsed once per content string: the whole
 // point of idea #5. `isLast` is a boolean prop (not an identity compare against the
 // parent's `last`) so memo can decide correctly without leaking the array.
-const MessageRow=memo(function MessageRow({m,isLast,busy,variants,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch}:{
- m:Message;isLast:boolean;busy:boolean;variants:MessageVariant[];
+const MessageRow=memo(function MessageRow({m,isLast,busy,variants,providers,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch}:{
+ m:Message;isLast:boolean;busy:boolean;variants:MessageVariant[];providers:ProviderConfig[];
  onCopy:(t:string)=>void;onRegenerate:()=>void;onContinue:(id:string)=>void;
  onDeleteMessage:(m:Message)=>void;onEditMessage:(m:Message,text:string)=>void;
  onLoadVariants:(id:string)=>void;onRestoreVariant:(id:string)=>void;
@@ -71,13 +100,16 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,variants,onCopy,onRegen
  const truncated=m.finishReason==='length';
  const filtered=m.finishReason==='content_filter';
  const refused=m.finishReason==='refusal';
+ // $ estimate from the provider's pricing map; null when the model has no known price.
+ const rawCost=m.role==='assistant'?messageCost(providers,m.providerId,m.model,m.promptTokens,m.completionTokens):null;
+ const cost=rawCost===null?undefined:formatCost(rawCost);
  return <article className={'message '+m.role}>
   <div className="message-avatar">{m.role==='user'?'Y':<Sparkles size={15}/>}</div>
   <div className="message-content">
    <div className="message-heading"><b>{m.role==='user'?'You':'Lumen'}</b>
     <small>{new Date(m.createdAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</small>
     {m.role==='assistant'&&m.model&&<small className="message-model">{m.model}</small>}
-    {m.role==='assistant'&&<Usage promptTokens={m.promptTokens} completionTokens={m.completionTokens}/>}
+    {m.role==='assistant'&&<Usage promptTokens={m.promptTokens} completionTokens={m.completionTokens} cost={cost}/>}
    </div>
    {!!m.attachments?.length&&<div className="attach-list">
     {/* Persisted images are served by the lumen-attachment:// protocol (CSP-listed);
@@ -93,7 +125,7 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,variants,onCopy,onRegen
        <button className="primary-button" onClick={()=>{onEditMessage(m,editText);setEditing(false);}}>Save & resend</button>
       </div>
      </div>
-    :<div className="markdown" dangerouslySetInnerHTML={{__html:html}}/>}
+    :<Markdown html={html}/>}
    {m.role==='assistant'&&(truncated||filtered||refused)&&
     <div className={'finish-note '+(truncated?'truncated':'blocked')}>
      {truncated?<><span>Answer was cut off by the token limit.</span><button onClick={()=>onContinue(m.id)}><CornerDownLeft size={12}/> Continue</button></>
@@ -114,23 +146,30 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,variants,onCopy,onRegen
  </article>;
 });
 
-export default function MessageList({messages,busy,stream,reasoning,error,variants,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch}:Props){
+export default function MessageList({messages,busy,stream,reasoning,error,variants,providers,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch}:Props){
  const last=messages[messages.length-1];
  const canRetry=!!last&&last.role==='assistant'&&!busy;
  // The streaming bubble re-parses on a throttle, not per chunk (idea #17).
  const streamHtml=useThrottledMarkdown(stream,120);
  return <div className="message-list">
-  {messages.map((m,i)=><MessageRow key={m.id} m={m} isLast={i===messages.length-1} busy={busy} variants={variants[m.id]??NO_VARIANTS}
-    onCopy={onCopy} onRegenerate={onRegenerate} onContinue={onContinue}
-    onDeleteMessage={onDeleteMessage} onEditMessage={onEditMessage}
-    onLoadVariants={onLoadVariants} onRestoreVariant={onRestoreVariant} onBranch={onBranch}/>)}
+  {messages.map((m,i)=>{
+   const prev=messages[i-1];
+   const newDay=!prev||dayStart(prev.createdAt)!==dayStart(m.createdAt);
+   return <div key={m.id} className="day-group">
+    {newDay&&<div className="date-sep" aria-hidden="true"><span>{dayLabel(m.createdAt)}</span></div>}
+    <MessageRow m={m} isLast={i===messages.length-1} busy={busy} variants={variants[m.id]??NO_VARIANTS} providers={providers}
+     onCopy={onCopy} onRegenerate={onRegenerate} onContinue={onContinue}
+     onDeleteMessage={onDeleteMessage} onEditMessage={onEditMessage}
+     onLoadVariants={onLoadVariants} onRestoreVariant={onRestoreVariant} onBranch={onBranch}/>
+   </div>;
+  })}
   {(busy||stream||reasoning)&&<article className="message assistant" aria-live="polite" aria-busy="true">
    <div className="message-avatar"><Sparkles size={15}/></div>
    <div className="message-content">
     <div className="message-heading"><b>Lumen</b><small>{stream?'Responding':'Thinking'}</small></div>
     <Reasoning key={stream?'answering':'thinking'} text={reasoning} collapsedByDefault={!!stream} live/>
     {stream
-     ?<div className="markdown" dangerouslySetInnerHTML={{__html:streamHtml}}/>
+     ?<Markdown html={streamHtml}/>
      :!reasoning&&<div className="typing"><i/><i/><i/></div>}
    </div>
   </article>}

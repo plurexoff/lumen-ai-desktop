@@ -1,9 +1,10 @@
 import {useEffect,useState} from 'react';
 import {Archive,Bot,Check,FolderOpen,Keyboard,Moon,Monitor,Pencil,Plus,Shield,Sparkles,Sun,Trash2,X} from 'lucide-react';
-import type {Accent,HotkeyMap,Persona,ProviderConfig,ProviderId,UsageSummary} from '../../electron/shared';
+import type {Accent,HotkeyMap,Persona,ProviderConfig,ProviderId,UsageRow,UsageSummary} from '../../electron/shared';
 import {ACCENTS,PERSONA_COLORS} from '../../electron/shared';
 import type {Prefs} from '../store';
 import {providerColors} from '../store';
+import {formatCost,messageCost} from '../cost';
 
 type Tab='providers'|'appearance'|'agents'|'data';
 
@@ -287,14 +288,26 @@ export default function SettingsModal(props:Props){
      <div className="privacy-row"><Shield size={17}/><div><b>Encrypted API keys</b><small>Protected by Windows secure storage (DPAPI).</small></div><Check size={14}/></div>
      {usage&&<div className="usage-summary">
       <h4>Lifetime usage</h4>
-      <div className="usage-stats">
-       <div><b>{usage.messages.toLocaleString()}</b><small>replies</small></div>
-       <div><b>{usage.promptTokens.toLocaleString()}</b><small>prompt tokens</small></div>
-       <div><b>{usage.completionTokens.toLocaleString()}</b><small>completion tokens</small></div>
-      </div>
-      {usage.byModel.length>0&&<div className="usage-by-model">{usage.byModel.slice(0,8).map((r,i)=>
-       <div className="usage-model-row" key={i}><span>{r.model??'—'} <i>{r.providerId??''}</i></span>
-        <small>{r.completionTokens.toLocaleString()} ↓</small></div>)}</div>}
+      {(()=>{
+       // $ estimates come from each provider's pricing map; rows without a known
+       // price simply don't contribute to the total.
+       const costOf=(r:UsageRow)=>messageCost(providers,r.providerId,r.model,r.promptTokens,r.completionTokens);
+       const total=usage.byModel.reduce((sum,r)=>sum+(costOf(r)??0),0);
+       const priced=usage.byModel.some(r=>costOf(r)!==null);
+       return <>
+        <div className="usage-stats">
+         <div><b>{usage.messages.toLocaleString()}</b><small>replies</small></div>
+         <div><b>{usage.promptTokens.toLocaleString()}</b><small>prompt tokens</small></div>
+         <div><b>{usage.completionTokens.toLocaleString()}</b><small>completion tokens</small></div>
+         {priced&&<div><b>{formatCost(total)}</b><small>estimated cost</small></div>}
+        </div>
+        {usage.byModel.length>0&&<div className="usage-by-model">{usage.byModel.slice(0,8).map((r,i)=>{
+         const c=costOf(r);
+         return <div className="usage-model-row" key={i}><span>{r.model??'—'} <i>{r.providerId??''}</i></span>
+          <small>{r.completionTokens.toLocaleString()} ↓{c!==null?' · ≈'+formatCost(c):''}</small></div>;
+        })}</div>}
+       </>;
+      })()}
      </div>}
      {hasActiveChat&&<div className="settings-actions">
       <button className="secondary-button" onClick={()=>onExport('md')}>Export Markdown</button>

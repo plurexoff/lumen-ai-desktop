@@ -1,4 +1,4 @@
-import type { ChatRequest, FinishReason, HotkeyMap, NewAttachment, Persona, ProviderConfig, ProviderId } from './shared';
+import type { ChatRequest, FinishReason, HotkeyMap, ModelPrice, NewAttachment, Persona, PricingMap, ProviderConfig, ProviderId } from './shared';
 import { ACCENTS, DEFAULT_HOTKEYS, IMAGE_MIMES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_PERSONAS, PERSONA_COLORS } from './shared';
 
 export interface ResolvedProvider { id: string; name: string; url: string; key: string; }
@@ -237,7 +237,7 @@ export function validateProviderConfig(input: unknown, pinnedUrls: Map<ProviderI
  } else {
   baseUrl = validateProviderUrl(typeof c.baseUrl === 'string' ? c.baseUrl : '');
  }
- const pricing = typeof c.pricing === 'object' && c.pricing !== null ? c.pricing : undefined;
+ const pricing = validatePricing(c.pricing);
  return { id: c.id, name, baseUrl, models, ...(pricing ? { pricing } : {}) };
 }
 
@@ -355,6 +355,49 @@ export function cleanTitle(raw: unknown): string {
  if (typeof raw !== 'string') return '';
  const line = raw.split('\n')[0].trim().replace(/^["'«»“”*#\s]+|[."'«»“”\s]+$/g, '');
  return line.length >= 2 && line.length <= 80 ? line : '';
+}
+
+// Prompt for the "enhance draft" side request (Kilo Code's Enhance Prompt): the
+// model rewrites the user's rough draft into a clearer, more effective prompt. The
+// original stays in place until the rewritten text is explicitly accepted.
+export const ENHANCE_PROMPT = 'Rewrite the following draft into a clear, effective prompt for an AI assistant: keep the user\'s intent and language, add structure and missing specifics, remove filler. Reply with the improved prompt only — no preamble, no quotes, no markdown fences.';
+// The enhanced text is still model output: it must be non-empty and bounded, and
+// surrounding quotes/fences are stripped so the composer gets plain text.
+export function cleanEnhanced(raw: unknown, original: string): string {
+ if (typeof raw !== 'string') return '';
+ let out = raw.trim().replace(/^```[a-z]*\s*|\s*```$/g, '').trim();
+ const pairs: Array<[string, string]> = [['"', '"'], ['«', '»'], ['“', '”']];
+ for (const [a, b] of pairs) if (out.length >= 2 && out.startsWith(a) && out.endsWith(b)) { out = out.slice(1, -1).trim(); break; }
+ return out && out !== original.trim() && out.length <= 32768 ? out : '';
+}
+
+// Reference prices in USD per 1M tokens for the built-in model lists. Seeded once
+// into each provider's `pricing` map (existing keys win — the user's numbers are
+// never overwritten). Local/custom providers have no reference price: they stay
+// empty and simply never show a $ estimate.
+export const DEFAULT_PRICING: Record<string, PricingMap> = {
+ openai: { 'gpt-4o': { input: 2.5, output: 10 }, 'gpt-4o-mini': { input: 0.15, output: 0.6 }, 'o3-mini': { input: 1.1, output: 4.4 } },
+ anthropic: { 'claude-sonnet-4-20250514': { input: 3, output: 15 }, 'claude-3-5-haiku-20241022': { input: 0.8, output: 4 } },
+ gemini: { 'gemini-2.0-flash': { input: 0.1, output: 0.4 }, 'gemini-2.5-pro-preview-03-25': { input: 1.25, output: 10 } },
+ openrouter: { 'anthropic/claude-sonnet-4': { input: 3, output: 15 }, 'openai/gpt-4o-mini': { input: 0.15, output: 0.6 } },
+ groq: { 'llama-3.3-70b-versatile': { input: 0.59, output: 0.79 }, 'deepseek-r1-distill-llama-70b': { input: 0.75, output: 0.99 } },
+ deepseek: { 'deepseek-chat': { input: 0.27, output: 1.1 }, 'deepseek-reasoner': { input: 0.55, output: 2.19 } },
+ mistral: { 'mistral-large-latest': { input: 2, output: 6 }, 'mistral-small-latest': { input: 0.1, output: 0.3 } },
+};
+
+// A pricing map is renderer-controlled JSON: keep only well-formed entries so a
+// tampered map cannot poison the cost display (NaN, negatives, huge objects).
+export function validatePricing(input: unknown): PricingMap | undefined {
+ if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+ const out: PricingMap = {};
+ for (const [model, price] of Object.entries(input as Record<string, unknown>).slice(0, 200)) {
+  if (!model || model.length > 200 || !price || typeof price !== 'object') continue;
+  const p = price as Partial<ModelPrice>;
+  if (typeof p.input !== 'number' || typeof p.output !== 'number') continue;
+  if (!Number.isFinite(p.input) || !Number.isFinite(p.output) || p.input < 0 || p.output < 0 || p.input > 1e6 || p.output > 1e6) continue;
+  out[model] = { input: p.input, output: p.output };
+ }
+ return out;
 }// A combo is "Ctrl+Shift+K"-style: modifiers first, one non-modifier key last.
 // Requiring Ctrl or Alt keeps a bare letter from swallowing normal typing.
 export function isValidHotkey(value: unknown): value is string {

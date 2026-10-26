@@ -225,3 +225,22 @@ html{background:#0c0d10}body{font-size:13px;line-height:1.4}.titlebar{font-size:
 .branch-link:hover{color:var(--text);border-color:var(--accent)}
 .branch-select{max-width:130px;background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:5px;font-size:10px;padding:3px 6px;outline:0}
 .branch-select option{background:#17191e;color:#e6e7e9}
+
+/* --- v1.5 additions: code-block copy, date separators, queue chip, enhance --- */
+.code-block{margin:0 0 10px;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.code-block pre{border:0;border-radius:0;margin:0}
+.code-head{display:flex;align-items:center;justify-content:space-between;padding:4px 6px 4px 12px;background:var(--raised);border-bottom:1px solid var(--line)}
+.code-lang{font-size:10px;color:var(--muted);font-family:Consolas,'Cascadia Mono',monospace}
+.code-copy{border:0;background:transparent;color:var(--muted);font-size:10px;padding:2px 7px;border-radius:4px;cursor:pointer}
+.code-copy:hover{color:var(--text);background:var(--line)}
+.markdown .code-block pre{margin:0}
+.date-sep{display:flex;align-items:center;gap:10px;margin:4px 0 18px;color:var(--faint);font-size:10px}
+.date-sep::before,.date-sep::after{content:"";flex:1;height:1px;background:var(--line)}
+.date-sep span{white-space:nowrap}
+.queue-chip{display:flex;align-items:center;gap:7px;margin:0 0 8px;padding:5px 9px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--muted);font-size:10px}
+.queue-chip svg{color:var(--accent)}
+.queue-chip span{flex:1}
+.queue-chip button{display:grid;place-items:center;width:18px;height:18px;border:0;border-radius:4px;background:transparent;color:var(--muted)}
+.queue-chip button:hover{color:var(--text);background:var(--line)}
+.enhance-btn.spinning svg{animation:spin 1s linear infinite}
+.enhance-btn:disabled{opacity:.4;cursor:default}

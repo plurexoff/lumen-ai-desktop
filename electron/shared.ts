@@ -48,6 +48,7 @@ export interface DesktopAPI {
  chats: { list():Promise<Chat[]>; create():Promise<Chat>; rename(id:string,title:string):Promise<void>; delete(id:string):Promise<void>; messages(id:string):Promise<Message[]>; deleteMessage(id:string,chatId:string):Promise<void>; variants(messageId:string):Promise<MessageVariant[]>; restoreVariant(variantId:string):Promise<Message[]>; branch(id:string,messageId:string):Promise<Chat>; usageSummary():Promise<UsageSummary>; export(id:string,format:'md'|'json'):Promise<string|null>; search(query:string):Promise<Array<{chatId:string;title:string;snippet:string}>>; onRenamed(callback:(chat:{id:string;title:string})=>void):()=>void };
  providers: { list():Promise<ProviderConfig[]>; save(config:ProviderConfig,key?:string):Promise<void>; remove(id:ProviderId):Promise<void>; models(id:ProviderId):Promise<string[]>; test(id:ProviderId):Promise<{ok:boolean;message:string}> };
  chat: { send(request:ChatRequest):Promise<void>; continueMessage(request:ChatRequest):Promise<void>; regenerate(request:ChatRequest):Promise<void>; stop(requestId?:string):Promise<{stopped:boolean}>; status():Promise<ActiveStream[]>; onChunk(callback:(data:ChatChunk)=>void):()=>void };
+ prompt: { enhance(draft:string,providerId:ProviderId,model:string):Promise<string> };
  data: { health():Promise<DataHealth>; wipe():Promise<void>; openFolder():Promise<void> };
  settings: { get():Promise<SettingsData>; save(settings:Record<string,unknown>):Promise<void> };
 }

@@ -8,6 +8,7 @@ import {
  isOpenAiReasoningModel,isGeminiThinkingModel,GEMINI_THINKING_BUDGET,
  isKnownProviderId,validateProviderConfig,validateChatRequest,clampSettings,
  isValidHotkey,normalizeHotkeys,validatePersonas,cleanTitle,
+ validatePricing,cleanEnhanced,DEFAULT_PRICING,ENHANCE_PROMPT,
  buildModelsRequest,buildChatRequest,type ResolvedProvider,
 } from '../electron/providers';
 import type {ProviderId} from '../electron/shared';
@@ -471,5 +472,45 @@ describe('auto-title cleanup',()=>{
   expect(cleanTitle('x')).toBe('');
   expect(cleanTitle('y'.repeat(81))).toBe('');
   expect(cleanTitle(42)).toBe('');
+ });
+});
+
+describe('enhance prompt',()=>{
+ it('ships a prompt that asks for the rewrite only',()=>{
+  expect(ENHANCE_PROMPT).toContain('improved prompt only');
+ });
+ it('strips fences and surrounding quotes from the model answer',()=>{
+  expect(cleanEnhanced('```\nbetter text\n```','draft')).toBe('better text');
+  expect(cleanEnhanced('"better text"','draft')).toBe('better text');
+  expect(cleanEnhanced('«улучшенный текст»','draft')).toBe('улучшенный текст');
+ });
+ it('rejects empty, unchanged or non-string answers so the draft is never blanked',()=>{
+  expect(cleanEnhanced('','draft')).toBe('');
+  expect(cleanEnhanced('  draft  ','draft')).toBe('');
+  expect(cleanEnhanced(null,'draft')).toBe('');
+  expect(cleanEnhanced('x'.repeat(32769),'draft')).toBe('');
+ });
+});
+
+describe('pricing validation',()=>{
+ it('keeps well-formed entries and drops malformed ones',()=>{
+  const out=validatePricing({'gpt-4o':{input:2.5,output:10},bad:{input:'x',output:1},neg:{input:-1,output:1},nan:{input:NaN,output:0}});
+  expect(out).toEqual({'gpt-4o':{input:2.5,output:10}});
+ });
+ it('returns undefined for non-objects and empty results stay valid',()=>{
+  expect(validatePricing('nope')).toBeUndefined();
+  expect(validatePricing([1,2])).toBeUndefined();
+  expect(validatePricing({})).toEqual({});
+ });
+ it('flows through provider validation, sanitized',()=>{
+  const pinned=new Map<ProviderId,string>();
+  const c=validateProviderConfig({id:'custom',name:'Mine',baseUrl:'https://api.example.com/v1',models:['m1'],pricing:{m1:{input:1,output:2},bad:{input:'x',output:1}}},pinned);
+  expect(c.pricing).toEqual({m1:{input:1,output:2}});
+ });
+ it('default pricing covers the seeded cloud providers, not local ones',()=>{
+  expect(DEFAULT_PRICING.openai['gpt-4o'].input).toBeGreaterThan(0);
+  expect(DEFAULT_PRICING.deepseek['deepseek-chat'].output).toBeGreaterThan(0);
+  expect(DEFAULT_PRICING.ollama).toBeUndefined();
+  expect(DEFAULT_PRICING.custom).toBeUndefined();
  });
 });

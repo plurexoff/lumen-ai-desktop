@@ -1,5 +1,5 @@
-import {forwardRef,useRef,useState} from 'react';
-import {ArrowUp,ChevronDown,ImagePlus,KeyRound,Shield,TriangleAlert,X} from 'lucide-react';
+import {forwardRef,useEffect,useRef,useState} from 'react';
+import {ArrowUp,ChevronDown,ImagePlus,KeyRound,ListPlus,Shield,TriangleAlert,Wand2,X} from 'lucide-react';
 import type {Persona,ProviderConfig,ProviderId} from '../../electron/shared';
 import {IMAGE_MIMES} from '../../electron/shared';
 import type {PendingImage} from '../store';
@@ -15,6 +15,10 @@ interface Props{
  images:PendingImage[];
  personas:Persona[];
  personaId:string;
+ // Sent-message history for ArrowUp recall (newest last), and messages queued while
+ // this chat was busy (they auto-send when the reply finishes).
+ history:string[];
+ queued:string[];
  onAddImages:(files:File[])=>void;
  onRemoveImage:(index:number)=>void;
  onPersona:(id:string)=>void;
@@ -24,9 +28,11 @@ interface Props{
  onProvider:(id:ProviderId)=>void;
  onModel:(model:string)=>void;
  onOpenSettings:()=>void;
+ onEnhance:(text:string)=>Promise<string>;
+ onClearQueue:()=>void;
 }
 
-export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,busy,needsSetup,providers,providerId,model,images,personas,personaId,onAddImages,onRemoveImage,onPersona,onDraft,onSend,onStop,onProvider,onModel,onOpenSettings},ref){
+export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,busy,needsSetup,providers,providerId,model,images,personas,personaId,history,queued,onAddImages,onRemoveImage,onPersona,onDraft,onSend,onStop,onProvider,onModel,onOpenSettings,onEnhance,onClearQueue},ref){
  const current=providers.find(p=>p.id===providerId);
  const models=current?.models??[];
  // An IME (CJK input) fires Enter to commit a candidate, not to send the message.
@@ -63,6 +69,23 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
   // Height is recomputed after React applies the value.
   requestAnimationFrame(()=>{const el=(ref&&typeof ref!=='function'?ref.current:null)??null;if(el)autosize(el);});
  };
+ // Prompt history recall (terminal-style): ArrowUp at the start of the input walks
+ // back through sent messages, ArrowDown walks forward and finally restores the
+ // draft the user was typing before navigating.
+ const nav=useRef<{idx:number;saved:string}|null>(null);
+ useEffect(()=>{nav.current=null;},[history.length]);
+ // Enhance Prompt: the draft goes to the model and comes back rewritten; the spinner
+ // is local, errors are flashed by the App-level handler.
+ const [enhancing,setEnhancing]=useState(false);
+ const enhance=()=>{
+  const text=draft.trim();
+  if(!text||enhancing||busy)return;
+  setEnhancing(true);
+  onEnhance(text)
+   .then(t=>{onDraft(t);requestAnimationFrame(()=>{const el=(ref&&typeof ref!=='function'?ref.current:null)??null;if(el){autosize(el);el.focus();}});})
+   .catch(()=>{})
+   .finally(()=>setEnhancing(false));
+ };
  return <footer className="composer-area"><div className="composer">
   {needsSetup&&<div className="composer-warning">
    <KeyRound size={13}/><span>No provider is connected yet.</span>
@@ -78,16 +101,35 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
     <button aria-label={'Remove '+a.name} onClick={()=>onRemoveImage(i)}><X size={11}/></button>
    </span>)}
   </div>}
+  {!!queued.length&&<div className="queue-chip" role="status">
+   <ListPlus size={12}/><span>{queued.length} queued — will send automatically</span>
+   <button aria-label="Clear queued messages" title="Clear queued messages" onClick={onClearQueue}><X size={11}/></button>
+  </div>}
   <input ref={fileInput} type="file" accept={IMAGE_MIMES.join(',')} multiple hidden aria-hidden="true" tabIndex={-1}
    onChange={e=>{const files=Array.from(e.target.files??[]);if(files.length)onAddImages(files);e.target.value='';}}/>
   <textarea ref={ref} value={draft} rows={1} spellCheck
    onCompositionStart={()=>{composing.current=true;}}
    onCompositionEnd={()=>{composing.current=false;}}
-   onChange={e=>{onDraft(e.target.value);autosize(e.currentTarget);}}
+   onChange={e=>{nav.current=null;onDraft(e.target.value);autosize(e.currentTarget);}}
    onKeyDown={e=>{
     // Ctrl/Cmd+Enter always sends; plain Enter sends unless composing an IME string.
     if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();onSend();return;}
-    if(e.key==='Enter'&&!e.shiftKey&&!composing.current){e.preventDefault();onSend();}
+    if(e.key==='Enter'&&!e.shiftKey&&!composing.current){e.preventDefault();onSend();return;}
+    // ArrowUp at the very start of the input recalls the last sent message.
+    if(e.key==='ArrowUp'&&history.length&&e.currentTarget.selectionStart===0&&e.currentTarget.selectionEnd===0){
+     e.preventDefault();
+     const n=nav.current??{idx:history.length,saved:draft};
+     n.idx=Math.max(0,n.idx-1);
+     nav.current=n;
+     onDraft(history[n.idx]);
+     return;
+    }
+    if(e.key==='ArrowDown'&&nav.current){
+     e.preventDefault();
+     const n=nav.current;
+     if(n.idx>=history.length-1){nav.current=null;onDraft(n.saved);}
+     else{n.idx+=1;onDraft(history[n.idx]);}
+    }
    }}
    onPaste={e=>{
     // Drag-and-drop and paste: images become attachments, text files are read whole
@@ -140,6 +182,7 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
    </div>
    <div className="send-area">
     <button className="attach-btn" aria-label="Attach images" title="Attach images (PNG, JPEG, WebP, GIF)" onClick={()=>fileInput.current?.click()}><ImagePlus size={15}/></button>
+    <button className={'attach-btn enhance-btn'+(enhancing?' spinning':'')} aria-label="Enhance prompt" title="Enhance prompt: the model rewrites your draft" disabled={!draft.trim()||busy||enhancing} onClick={enhance}><Wand2 size={15}/></button>
     <small><kbd>↵</kbd> to send</small>
     {/* Never pass the handler straight to onClick: React would hand it the mouse
         event as the first argument, and send(text?) would treat that object as the

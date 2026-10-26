@@ -33,6 +33,9 @@ const api:DesktopAPI={
   status:()=>ipcRenderer.invoke('chat:status'),
   onChunk:callback=>{const listener=(_event:Electron.IpcRendererEvent,data:Parameters<typeof callback>[0])=>callback(data);ipcRenderer.on('chat:chunk',listener);return()=>ipcRenderer.removeListener('chat:chunk',listener);},
  },
+ prompt:{
+  enhance:(draft,providerId,model)=>ipcRenderer.invoke('prompt:enhance',draft,providerId,model),
+ },
  data:{
   health:()=>ipcRenderer.invoke('data:health'),
   wipe:()=>ipcRenderer.invoke('data:wipe'),

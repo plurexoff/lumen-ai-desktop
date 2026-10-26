@@ -6,7 +6,7 @@ import { openDatabase, query, run, one, saveNow, transaction, dbStatus, lastPers
 import {
  parseSseEvent, parseReasoningEvent, parseUsageEvent, parseAnthropicUsage, parseFinishReason, parseAnthropicFinish,
  validateProviderUrl, isSafeExternalUrl, isLoopbackUrl, buildModelsRequest, buildChatRequest, trimHistory, normalizeHistory,
- validateProviderConfig, validateChatRequest, clampSettings, isKnownProviderId, normalizeHotkeys, authHeaders, TITLE_PROMPT, cleanTitle, stripGeminiModelPrefix,
+ validateProviderConfig, validateChatRequest, clampSettings, isKnownProviderId, normalizeHotkeys, authHeaders, TITLE_PROMPT, cleanTitle, stripGeminiModelPrefix, ENHANCE_PROMPT, cleanEnhanced, DEFAULT_PRICING,
  type ResolvedProvider, type HistoryMessage,
 } from './providers';
 import { randomUUID } from 'node:crypto';
@@ -96,6 +96,27 @@ function notifyCompletion(chatId:string,error?:string){
  n.on('click',()=>{if(win&&!win.isDestroyed()){win.show();win.focus();}});
  n.show();
 }
+// A short non-streaming side request shared by auto-title and enhance-prompt.
+// Returns the raw text the model produced ('' on any non-OK response).
+async function miniRequest(p:ResolvedProvider,model:string,content:string,maxTokens:number):Promise<string>{
+ const headers={...authHeaders(p),'content-type':'application/json'};
+ if(p.id==='gemini'){
+  const res=await fetch(p.url+`/models/${encodeURIComponent(stripGeminiModelPrefix(model))}:generateContent`,{method:'POST',headers,body:JSON.stringify({contents:[{role:'user',parts:[{text:content}]}],generationConfig:{maxOutputTokens:maxTokens}})});
+  if(!res.ok)return '';
+  const data=await res.json() as {candidates?:Array<{content?:{parts?:Array<{text?:string}>}}>};
+  return (data.candidates?.[0]?.content?.parts??[]).map(x=>x.text??'').join('');
+ }
+ if(p.id==='anthropic'){
+  const res=await fetch(p.url+'/messages',{method:'POST',headers,body:JSON.stringify({model,max_tokens:maxTokens,temperature:0.3,messages:[{role:'user',content}]})});
+  if(!res.ok)return '';
+  const data=await res.json() as {content?:Array<{text?:string}>};
+  return data.content?.[0]?.text??'';
+ }
+ const res=await fetch(p.url+'/chat/completions',{method:'POST',headers,body:JSON.stringify({model,max_tokens:maxTokens,temperature:0.3,messages:[{role:'user',content}],stream:false})});
+ if(!res.ok)return '';
+ const data=await res.json() as {choices?:Array<{message?:{content?:string}}>};
+ return data.choices?.[0]?.message?.content??'';
+}
 // A short non-streaming side request that names a chat after its first exchange
 // (opencode's hidden "title" agent). Fire-and-forget: any failure just keeps the
 // prefix title. The UPDATE guard never overwrites a title the user typed meanwhile.
@@ -106,18 +127,7 @@ async function maybeAutoTitle(p:ResolvedProvider,chatId:string,model:string,user
   const prefix=userText.replace(/\s+/g,' ').trim().slice(0,48);
   if(chat.title!=='New conversation'&&chat.title!==prefix)return;
   const content=TITLE_PROMPT+'\n\nUser: '+(userText||'[image attachment]').slice(0,500)+'\nAssistant: '+assistantText.slice(0,500);
-  const headers={...authHeaders(p),'content-type':'application/json'};
-  let raw='';
-  if(p.id==='gemini'){
-   const res=await fetch(p.url+`/models/${encodeURIComponent(stripGeminiModelPrefix(model))}:generateContent`,{method:'POST',headers,body:JSON.stringify({contents:[{role:'user',parts:[{text:content}]}],generationConfig:{maxOutputTokens:40}})});
-   if(res.ok){const data=await res.json() as {candidates?:Array<{content?:{parts?:Array<{text?:string}>}}>};raw=(data.candidates?.[0]?.content?.parts??[]).map(x=>x.text??'').join('');}
-  }else if(p.id==='anthropic'){
-   const res=await fetch(p.url+'/messages',{method:'POST',headers,body:JSON.stringify({model,max_tokens:40,temperature:0.3,messages:[{role:'user',content}]})});
-   if(res.ok){const data=await res.json() as {content?:Array<{text?:string}>};raw=data.content?.[0]?.text??'';}
-  }else{
-   const res=await fetch(p.url+'/chat/completions',{method:'POST',headers,body:JSON.stringify({model,max_tokens:40,temperature:0.3,messages:[{role:'user',content}],stream:false})});
-   if(res.ok){const data=await res.json() as {choices?:Array<{message?:{content?:string}}>};raw=data.choices?.[0]?.message?.content??'';}
-  }
+  const raw=await miniRequest(p,model,content,40);
   const title=cleanTitle(raw);
   if(!title)return;
   run('UPDATE chats SET title=? WHERE id=? AND title=?',[title,chatId,chat.title]);
@@ -136,6 +146,17 @@ async function initDb(){
   // `custom` is user-removable: only create it on a first run, so removing it sticks.
   if(p.id==='custom'&&!empty)continue;
   run('INSERT OR IGNORE INTO providers(id,name,base_url,models) VALUES(?,?,?,?)',[p.id,p.name,p.baseUrl,JSON.stringify(p.models)]);
+  // Seed reference prices for the built-in model lists. Only missing keys are
+  // filled — a price the user edited always wins over an update to the defaults.
+  const ref=DEFAULT_PRICING[p.id];
+  if(ref){
+   const row=one('SELECT pricing FROM providers WHERE id=?',[p.id]) as {pricing:string|null}|undefined;
+   let cur:Record<string,unknown>;
+   try{cur=row?.pricing?JSON.parse(row.pricing):{};}catch{cur={};}
+   let changed=false;
+   for(const [m,price] of Object.entries(ref))if(!(m in cur)){cur[m]=price;changed=true;}
+   if(changed)run('UPDATE providers SET pricing=? WHERE id=?',[JSON.stringify(cur),p.id]);
+  }
  }
  reapOrphans();
 }
@@ -330,6 +351,18 @@ function initIpc(){
  // Lets the renderer re-mark chats that are still streaming after a reload.
  ipcMain.handle('chat:status',()=>[...activeRequests.entries()].map(([requestId,s])=>({chatId:s.chatId,requestId})) as ActiveStream[]);
  ipcMain.handle('chat:send',(_e,r:unknown)=>generate(r,'send'));
+ // Enhance Prompt (Kilo-style): rewrite the composer draft via the same mini-request
+ // path as auto-titles. Fully validated — the renderer is untrusted.
+ ipcMain.handle('prompt:enhance',async(_e,draft:unknown,providerId:unknown,model:unknown)=>{
+  if(typeof draft!=='string'||!draft.trim()||draft.length>32768)throw new Error('Draft is empty or too long');
+  if(!isKnownProviderId(providerId))throw new Error('Unknown provider');
+  if(typeof model!=='string'||!model.trim()||model.length>200)throw new Error('No model selected');
+  const p=getProvider(providerId);
+  const raw=await miniRequest(p,model.trim(),ENHANCE_PROMPT+'\n\n'+draft.trim(),2048);
+  const out=cleanEnhanced(raw,draft);
+  if(!out)throw new Error('The provider returned nothing usable — try again');
+  return out;
+ });
  ipcMain.handle('chat:continue',(_e,r:unknown)=>generate(r,'continue'));
  ipcMain.handle('chat:regenerate',(_e,r:unknown)=>generate(r,'regenerate'));
  ipcMain.handle('data:health',()=>({ok:!lastPersistError(),persistError:lastPersistError()}));

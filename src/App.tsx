@@ -74,6 +74,13 @@ export default function App(){
  // identity stays stable and memoized children do not re-render while typing.
  const draftRef=useRef('');
  useEffect(()=>{draftRef.current=draft;},[draft]);
+ // Sent prompts for ArrowUp recall in the composer (session-only, newest last).
+ const [history,setHistory]=useState<string[]>([]);
+ const historyRef=useRef(history);
+ // Messages typed while a chat was still generating, keyed by chatId. Drained one
+ // at a time by the queue-flush effect below when that chat's stream settles.
+ const [queues,setQueues]=useState<Record<string,string[]>>({});
+ const queuesRef=useRef(queues);
 
  const active=chats.find(c=>c.id===activeId);
  const stream=activeId?streams[activeId]:undefined;
@@ -177,7 +184,20 @@ export default function App(){
   const atts=imagesRef.current;
   // An image-only message is valid: the prompt may BE the image.
   if(!content&&!atts.length)return;
-  if(chatId&&s.streams[chatId]){flash('Still generating — stop it first');return;}
+  if(chatId&&s.streams[chatId]){
+   // A generation is running in this chat: queue the text and let the queue-flush
+   // effect send it when the reply settles. Images can't be queued — they stage in
+   // the composer and would be stranded, so keep them out for now.
+   if(atts.length){flash('Wait for the current reply before attaching images');return;}
+   if(!content)return;
+   const q=queuesRef.current[chatId]??[];
+   if(q.length>=10){flash('Queue is full — wait for the current reply');return;}
+   const next={...queuesRef.current,[chatId]:[...q,content]};
+   queuesRef.current=next;setQueues(next);
+   if(text===undefined)setDraft('');
+   flash('Queued — sends when the reply finishes');
+   return;
+  }
   // A selected persona overrides the prompt and (when pinned) provider/model/temp.
   const persona=s.settings.personas.find(p=>p.id===s.settings.personaId);
   const effProvider=persona?.providerId??s.providerId;
@@ -196,7 +216,11 @@ export default function App(){
   const st=useApp.getState().settings;
   try{await window.lumen.chat.send({requestId,chatId:target,providerId:effProvider,model:effModel,content,skipUserPersist:over?.skipUserPersist,
    ...(atts.length?{attachments:atts.map(({name,mime,data})=>({name,mime,data}))}:{})
-   ,...requestParams(st)});}
+   ,...requestParams(st)});
+  // History for ArrowUp recall: only messages that actually reached the provider,
+  // no consecutive duplicates, capped at 50.
+  if(content){const h=historyRef.current;if(h[h.length-1]!==content){const next=[...h,content].slice(-50);historyRef.current=next;setHistory(next);}}
+  }
   catch(e){failStream(target,e,atts);}
  },[beginStream,failStream,flash,set]);
 
@@ -306,6 +330,8 @@ export default function App(){
   const nextErrors={...useApp.getState().errors};delete nextErrors[chat.id];
   set({chats:cs,activeId:next?.id??null,messages:[],streams:nextStreams,errors:nextErrors});
   setVariants({});
+  // A deleted chat's queued messages have nowhere to go — drop them too.
+  if(queuesRef.current[chat.id]){const nq={...queuesRef.current};delete nq[chat.id];queuesRef.current=nq;setQueues(nq);}
   if(next)await load(next.id);
  },[load,set]);
 
@@ -358,6 +384,45 @@ export default function App(){
   void window.lumen.chat.stop(live.requestId).catch(()=>{});
  },[]);
 
+ // Queue flush: when a chat leaves the busy set and its turn did not end in an error,
+ // send the oldest queued message. One per settle — the flush of that send triggers
+ // the next, so a long queue drains in order without overlapping requests.
+ const prevBusyRef=useRef<Set<string>>(new Set());
+ useEffect(()=>{
+  const prev=prevBusyRef.current;
+  const now=new Set(Object.keys(streams));
+  for(const id of prev){
+   if(now.has(id)||errors[id])continue;
+   const q=queuesRef.current[id];
+   if(!q?.length)continue;
+   const [next,...rest]=q;
+   const nextQueues={...queuesRef.current,[id]:rest};
+   queuesRef.current=nextQueues;setQueues(nextQueues);
+   void send(next,{chatId:id});
+  }
+  prevBusyRef.current=now;
+ },[streams,errors,send]);
+
+ const clearQueue=useCallback(()=>{
+  const id=useApp.getState().activeId;if(!id)return;
+  if(!queuesRef.current[id]?.length)return;
+  const next={...queuesRef.current};delete next[id];
+  queuesRef.current=next;setQueues(next);
+ },[]);
+
+ // Enhance Prompt: the draft is rewritten by the currently selected (or persona-
+ // pinned) provider/model via a mini-request in main. Errors surface as a toast;
+ // the composer keeps its original draft either way.
+ const enhanceDraft=useCallback(async(text:string)=>{
+  const s=useApp.getState();
+  const persona=s.settings.personas.find(p=>p.id===s.settings.personaId);
+  const effProvider=persona?.providerId??s.providerId;
+  const effModel=persona?.model??s.model;
+  if(!effModel){flash('Add or select a model for this provider in Settings');throw new Error('No model selected');}
+  try{return await window.lumen.prompt.enhance(text,effProvider,effModel);}
+  catch(e){flash(e instanceof Error?e.message:'Could not enhance the draft');throw e;}
+ },[flash]);
+
  const scrollToBottom=useCallback(()=>{
   const el=conversation.current;if(!el)return;el.scrollTo({top:el.scrollHeight,behavior:'smooth'});setAtBottom(true);
  },[]);
@@ -376,6 +441,7 @@ export default function App(){
    await window.lumen.data.wipe();
    set({chats:[],activeId:null,messages:[],streams:{},errors:{}});
    setVariants({});variantsRef.current={};
+   queuesRef.current={};setQueues({});
    // Wipe flushes synchronously in main; if that write failed the conversations come
    // back on next launch, so only claim success once health confirms it.
    const err=await checkHealth();
@@ -495,7 +561,7 @@ export default function App(){
      {messages.length===0&&!stream&&!busy
       ?<Welcome needsSetup={needsSetup} onSetup={openProvidersTab} onPick={pickSuggestion}/>
       :<MessageList messages={messages} busy={busy} stream={stream?.text??''} reasoning={stream?.reasoning??''} error={error}
-        variants={variants} bottomRef={bottom} onCopy={copy} onRegenerate={regenerate}
+        variants={variants} providers={providers} bottomRef={bottom} onCopy={copy} onRegenerate={regenerate}
         onContinue={continueMessage} onDeleteMessage={deleteMessage} onEditMessage={commitEdit} onRetry={regenerate}
         onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat}/>}
     </section>
@@ -503,6 +569,7 @@ export default function App(){
     <Composer ref={input} draft={draft} busy={busy} needsSetup={needsSetup} providers={providers} providerId={providerId} model={model}
       images={images} onAddImages={addImages} onRemoveImage={removeImage}
       personas={settings.personas} personaId={settings.personaId} onPersona={id=>void pref('personaId',id)}
+      history={history} queued={activeId?queues[activeId]??[]:[]} onClearQueue={clearQueue} onEnhance={enhanceDraft}
       onDraft={setDraft} onSend={send} onStop={stopActive} onOpenSettings={openProvidersTab}
       onProvider={changeProvider} onModel={selectModel}/>
    </main>
