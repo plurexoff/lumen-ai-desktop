@@ -31,7 +31,19 @@ export interface DayUsage { day: string; promptTokens: number; completionTokens:
 // A reusable prompt template; {{input}} is replaced by the current draft.
 export interface PromptTemplate { id: string; name: string; text: string }
 export const MAX_TEMPLATES = 50;
-export interface Message { id: string; chatId: string; role: 'user' | 'assistant'; content: string; createdAt: number; model?: string | null; providerId?: ProviderId | null; promptTokens?: number | null; completionTokens?: number | null; reasoning?: string | null; finishReason?: FinishReason; variantCount?: number; attachments?: AttachmentMeta[]; bookmarked?: number; }
+// A document attached to a chat for retrieval (RAG-lite): text extracted at attach
+// time, keyword-ranked chunks injected into the system prompt on send.
+export interface ChatDoc { id: string; chatId: string; name: string; chars: number; createdAt: number }
+export const MAX_DOC_CHARS = 200_000;
+export const MAX_DOCS_PER_CHAT = 8;
+// An external MCP (Model Context Protocol) server, spawned over stdio.
+export interface McpServer { id: string; name: string; command: string }
+export const MAX_MCP_SERVERS = 5;
+// One answer in compare mode.
+export interface CompareAnswer { providerId: ProviderId; model: string; text: string; error?: string; promptTokens?: number; completionTokens?: number }
+// A structured tool event for the feed cards (name + short hint + outcome).
+export interface ToolEvent { name: string; hint: string; status: 'running' | 'ok' | 'error' | 'declined'; bytes?: number }
+export interface Message { id: string; chatId: string; role: 'user' | 'assistant'; content: string; createdAt: number; model?: string | null; providerId?: ProviderId | null; promptTokens?: number | null; completionTokens?: number | null; reasoning?: string | null; finishReason?: FinishReason; variantCount?: number; attachments?: AttachmentMeta[]; bookmarked?: number; rating?: number; }
 // A superseded assistant answer, kept so Regenerate is not destructive.
 export interface MessageVariant { id: string; messageId: string; content: string; reasoning: string | null; createdAt: number; promptTokens: number | null; completionTokens: number | null; }
 // `skipUserPersist` lets Regenerate re-send a prompt that is already stored;
@@ -46,8 +58,8 @@ export interface UsageRow { providerId: string | null; model: string | null; mes
 export interface UsageSummary { messages: number; promptTokens: number; completionTokens: number; byModel: UsageRow[] }
 export interface DataHealth { ok: boolean; persistError: string | null; }
 // Rebindable global shortcuts, stored as "Ctrl+Shift+K"-style combos.
-export interface HotkeyMap { newChat: string; openSettings: string; toggleSidebar: string }
-export const DEFAULT_HOTKEYS: HotkeyMap = { newChat: 'Ctrl+K', openSettings: 'Ctrl+,', toggleSidebar: 'Ctrl+B' };
+export interface HotkeyMap { newChat: string; openSettings: string; toggleSidebar: string; quickChat: string }
+export const DEFAULT_HOTKEYS: HotkeyMap = { newChat: 'Ctrl+K', openSettings: 'Ctrl+,', toggleSidebar: 'Ctrl+B', quickChat: 'Ctrl+Shift+Q' };
 // A named preset ("agent" in opencode terms): prompt + optional sampling/model
 // overrides, applied on top of the global settings when selected in the composer.
 export interface Persona { id: string; name: string; prompt: string; color: string; temperature?: number; providerId?: ProviderId; model?: string; }
@@ -56,14 +68,16 @@ export const MAX_PERSONAS = 20;
 // Accent palettes the shell theme supports; validated against this allow-list.
 export const ACCENTS = ['violet', 'blue', 'green', 'amber', 'rose'] as const;
 export type Accent = (typeof ACCENTS)[number];
-export interface SettingsData { theme: 'dark' | 'light'; systemPrompt: string; temperature: number; maxTokens: number; topP: number; minimizeToTray: boolean; autoStart: boolean; notifications: boolean; accent: Accent; personas: Persona[]; personaId: string; hotkeys: HotkeyMap; templates: PromptTemplate[]; defaultWorkspace: string; customCss: string; compactMode: boolean; }
+export interface SettingsData { theme: 'dark' | 'light'; systemPrompt: string; temperature: number; maxTokens: number; topP: number; minimizeToTray: boolean; autoStart: boolean; notifications: boolean; accent: Accent; personas: Persona[]; personaId: string; hotkeys: HotkeyMap; templates: PromptTemplate[]; defaultWorkspace: string; customCss: string; compactMode: boolean; mcpServers: McpServer[]; }
 export interface DesktopAPI {
  window: { minimize():void; toggleMaximize():void; close():void; setAlwaysOnTop(on:boolean):void };
  app: { version():Promise<string>; pickFolder(title?:string):Promise<string|null> };
- chats: { list():Promise<Chat[]>; create():Promise<Chat>; rename(id:string,title:string):Promise<void>; delete(id:string):Promise<void>; pin(id:string,pinned:boolean):Promise<void>; setFolder(id:string,folderId:string|null):Promise<void>; setArchived(id:string,archived:boolean):Promise<void>; setReadonly(id:string,readonly:boolean):Promise<void>; setTags(id:string,tags:string[]):Promise<void>; pickWorkspace(id:string):Promise<Chat|null>; clearWorkspace(id:string):Promise<void>; messages(id:string):Promise<Message[]>; deleteMessage(id:string,chatId:string):Promise<void>; bookmarkMessage(id:string,bookmarked:boolean):Promise<void>; variants(messageId:string):Promise<MessageVariant[]>; restoreVariant(variantId:string):Promise<Message[]>; branch(id:string,messageId:string):Promise<Chat>; usageSummary():Promise<UsageSummary>; usageByDay():Promise<DayUsage[]>; summarize(id:string):Promise<string>; export(id:string,format:'md'|'json'):Promise<string|null>; exportPrepared(id:string,format:'html'|'pdf',html:string):Promise<string|null>; search(filters:SearchFilters):Promise<SearchResult[]>; readWorkspaceFile(id:string,rel:string):Promise<string|null>; todos(id:string):Promise<TodoItem[]>; fileOps(id:string):Promise<FileOp[]>; rollbackOp(opId:string):Promise<{ok:boolean;message:string}>; onRenamed(callback:(chat:{id:string;title:string})=>void):()=>void; onTodos(callback:(chat:{chatId:string;todos:TodoItem[]})=>void):()=>void };
+ chats: { list():Promise<Chat[]>; create():Promise<Chat>; rename(id:string,title:string):Promise<void>; delete(id:string):Promise<void>; pin(id:string,pinned:boolean):Promise<void>; setFolder(id:string,folderId:string|null):Promise<void>; setArchived(id:string,archived:boolean):Promise<void>; setReadonly(id:string,readonly:boolean):Promise<void>; setTags(id:string,tags:string[]):Promise<void>; pickWorkspace(id:string):Promise<Chat|null>; clearWorkspace(id:string):Promise<void>; messages(id:string):Promise<Message[]>; deleteMessage(id:string,chatId:string):Promise<void>; bookmarkMessage(id:string,bookmarked:boolean):Promise<void>; rateMessage(id:string,rating:number):Promise<void>; variants(messageId:string):Promise<MessageVariant[]>; restoreVariant(variantId:string):Promise<Message[]>; branch(id:string,messageId:string):Promise<Chat>; usageSummary():Promise<UsageSummary>; usageByDay():Promise<DayUsage[]>; summarize(id:string):Promise<string>; compare(chatId:string,otherProviderId:ProviderId,otherModel:string):Promise<CompareAnswer[]>; export(id:string,format:'md'|'json'):Promise<string|null>; exportPrepared(id:string,format:'html'|'pdf',html:string):Promise<string|null>; exportZip(id:string):Promise<string|null>; search(filters:SearchFilters):Promise<SearchResult[]>; readWorkspaceFile(id:string,rel:string):Promise<string|null>; listWorkspaceFiles(id:string,query:string):Promise<string[]>; docs(id:string):Promise<ChatDoc[]>; attachDoc(id:string):Promise<ChatDoc|null>; removeDoc(docId:string):Promise<void>; todos(id:string):Promise<TodoItem[]>; fileOps(id:string):Promise<FileOp[]>; rollbackOp(opId:string):Promise<{ok:boolean;message:string}>; onRenamed(callback:(chat:{id:string;title:string})=>void):()=>void; onTodos(callback:(chat:{chatId:string;todos:TodoItem[]})=>void):()=>void; onFileOp(callback:(op:FileOp)=>void):()=>void };
  folders: { list():Promise<Folder[]>; create(name:string):Promise<Folder>; rename(id:string,name:string):Promise<void>; delete(id:string):Promise<void> };
  providers: { list():Promise<ProviderConfig[]>; save(config:ProviderConfig,key?:string):Promise<void>; remove(id:ProviderId):Promise<void>; models(id:ProviderId):Promise<string[]>; test(id:ProviderId):Promise<{ok:boolean;message:string}> };
- chat: { send(request:ChatRequest):Promise<void>; continueMessage(request:ChatRequest):Promise<void>; regenerate(request:ChatRequest):Promise<void>; stop(requestId?:string):Promise<{stopped:boolean}>; status():Promise<ActiveStream[]>; onChunk(callback:(data:ChatChunk)=>void):()=>void };
+ chat: { send(request:ChatRequest):Promise<void>; continueMessage(request:ChatRequest):Promise<void>; regenerate(request:ChatRequest):Promise<void>; stop(requestId?:string):Promise<{stopped:boolean}>; status():Promise<ActiveStream[]>; onChunk(callback:(data:ChatChunk)=>void):()=>void; onTool(callback:(chatId:string,ev:ToolEvent)=>void):()=>void };
+ quick: { ask(text:string):Promise<string>; hide():void; onShown(callback:()=>void):()=>void };
+ updates: { check():Promise<string>; install():void };
  prompt: { enhance(draft:string,providerId:ProviderId,model:string):Promise<string> };
  data: { health():Promise<DataHealth>; wipe():Promise<void>; openFolder():Promise<void>; backup():Promise<string|null>; restore():Promise<boolean> };
  settings: { get():Promise<SettingsData>; save(settings:Record<string,unknown>):Promise<void> };

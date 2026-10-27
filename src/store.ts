@@ -1,8 +1,8 @@
 import {create} from 'zustand';
-import type {Accent,Chat,HotkeyMap,Message,Persona,PromptTemplate,ProviderConfig,ProviderId,FinishReason} from '../electron/shared';
+import type {Accent,Chat,HotkeyMap,McpServer,Message,Persona,PromptTemplate,ProviderConfig,ProviderId,FinishReason,ToolEvent} from '../electron/shared';
 import {DEFAULT_HOTKEYS} from '../electron/shared';
 
-export type Prefs={theme:'dark'|'light';systemPrompt:string;temperature:number;maxTokens:number;topP:number;minimizeToTray:boolean;autoStart:boolean;notifications:boolean;accent:Accent;personas:Persona[];personaId:string;hotkeys:HotkeyMap;templates:PromptTemplate[];defaultWorkspace:string;customCss:string;compactMode:boolean};
+export type Prefs={theme:'dark'|'light';systemPrompt:string;temperature:number;maxTokens:number;topP:number;minimizeToTray:boolean;autoStart:boolean;notifications:boolean;accent:Accent;personas:Persona[];personaId:string;hotkeys:HotkeyMap;templates:PromptTemplate[];defaultWorkspace:string;customCss:string;compactMode:boolean;mcpServers:McpServer[]};
 
 // An image staged in the composer but not sent yet. `preview` is a data: URL so the
 // optimistic bubble can render it without touching the lumen-attachment:// protocol.
@@ -22,6 +22,8 @@ export interface StreamState{
  // What the model is doing between text chunks (e.g. "Running read_file…") while
  // workspace tools execute. Cleared by the next status chunk or stream end.
  status?:string;
+ // Tool calls of the current answer, for the cards in the streaming bubble.
+ toolEvents?:ToolEvent[];
 }
 
 export interface State{
@@ -46,7 +48,7 @@ export interface State{
 
 export const useApp=create<State>(set=>({
  chats:[],activeId:null,messages:[],providers:[],
- settings:{theme:'dark',systemPrompt:'',temperature:.7,maxTokens:2048,topP:1,minimizeToTray:false,autoStart:false,notifications:false,accent:'violet',personas:[],personaId:'',hotkeys:DEFAULT_HOTKEYS,templates:[],defaultWorkspace:'',customCss:'',compactMode:false},
+ settings:{theme:'dark',systemPrompt:'',temperature:.7,maxTokens:2048,topP:1,minimizeToTray:false,autoStart:false,notifications:false,accent:'violet',personas:[],personaId:'',hotkeys:DEFAULT_HOTKEYS,templates:[],defaultWorkspace:'',customCss:'',compactMode:false,mcpServers:[]},
  providerId:'openai',model:'gpt-4o-mini',
  streams:{},errors:{},pending:{},
  set:x=>set(x),

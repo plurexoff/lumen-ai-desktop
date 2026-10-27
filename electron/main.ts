@@ -1,18 +1,22 @@
-import { app, BrowserWindow, ipcMain, safeStorage, dialog, shell, screen, nativeTheme, Tray, Menu, nativeImage, protocol, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, dialog, shell, screen, nativeTheme, Tray, Menu, nativeImage, protocol, Notification, globalShortcut } from 'electron';
 import path from 'node:path';
+import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';
+import { execFile } from 'node:child_process';
 import { openDatabase, query, run, one, saveNow, transaction, dbStatus, lastPersistError, SCHEMA_VERSION } from './db';
 import {
  parseSseEvent, parseReasoningEvent, parseUsageEvent, parseAnthropicUsage, parseFinishReason, parseAnthropicFinish,
  validateProviderUrl, isSafeExternalUrl, isLoopbackUrl, buildModelsRequest, buildChatRequest, trimHistory, normalizeHistory,
  validateProviderConfig, validateChatRequest, clampSettings, isKnownProviderId, normalizeHotkeys, authHeaders, TITLE_PROMPT, cleanTitle, stripGeminiModelPrefix, ENHANCE_PROMPT, cleanEnhanced, DEFAULT_PRICING,
  parseToolCallDelta, parseAnthropicToolEvent, parseGeminiToolCall,
- type ResolvedProvider, type HistoryMessage, type ToolCallRecord,
+ type ResolvedProvider, type HistoryMessage, type ToolCallRecord, type ToolDef,
 } from './providers';
-import { TOOL_DEFS, WORKSPACE_PROMPT, MAX_TOOL_ROUNDS, runToolCall, restoreSnapshot, listFiles, readWorkspaceFile, normalizeTodos, type ApproveFn } from './tools';
+import { TOOL_DEFS, WORKSPACE_PROMPT, MAX_TOOL_ROUNDS, runToolCall, restoreSnapshot, listFiles, readWorkspaceFile, normalizeTodos, type ApproveFn, type ToolResult } from './tools';
+import { mcpTools, mcpCall, mcpShutdown } from './mcp';
 import { randomUUID } from 'node:crypto';
-import type { ProviderConfig, ProviderId, FinishReason, ActiveStream, UsageRow, UsageSummary, Folder, SearchFilters, DayUsage, FileOp } from './shared';
+import type { ProviderConfig, ProviderId, FinishReason, ActiveStream, UsageRow, UsageSummary, Folder, SearchFilters, DayUsage, FileOp, ChatDoc, McpServer, CompareAnswer, ToolEvent, HotkeyMap } from './shared';
+import { MAX_DOC_CHARS, MAX_DOCS_PER_CHAT } from './shared';
 
 // Lightweight structured logging: main-process failures were previously invisible.
 function log(...args: unknown[]) { console.log('[lumen]', ...args); }
@@ -45,6 +49,9 @@ const MAX_TOOL_BUDGET_CHARS=200_000;
 let win:BrowserWindow;
 // chatId is kept so the renderer can discover orphaned streams after a reload.
 const activeRequests=new Map<string,{controller:AbortController;chatId:string}>();
+// watch_files: last known file mtimes per chat, so a generation can be told what
+// changed on disk outside the app since its previous answer.
+const workspaceSnapshots=new Map<string,Map<string,number>>();
 // Image bytes live as plain files (not in lumen.sqlite): sql.js holds the whole DB
 // in memory and re-exports it on every flush, so inlined images would tax every write.
 const attachmentsDir=()=>path.join(app.getPath('userData'),'attachments');
@@ -226,7 +233,73 @@ function createWindow(){
  win.on('closed',()=>saveNow());
  if(process.env.VITE_DEV_SERVER_URL)void win.loadURL(process.env.VITE_DEV_SERVER_URL);else void win.loadURL(pathToFileURL(path.join(__dirname,'../dist/index.html')).toString());
 }
-const MESSAGE_COLUMNS='id,chat_id as chatId,role,content,created_at as createdAt,model,provider_id as providerId,prompt_tokens as promptTokens,completion_tokens as completionTokens,reasoning,finish_reason as finishReason,bookmarked,(SELECT COUNT(*) FROM message_variants v WHERE v.message_id=messages.id) AS variantCount';
+// watch_files: relative path → mtime for every file listFiles sees (capped list).
+function snapshotWorkspace(root:string):Map<string,number>{
+ const out=new Map<string,number>();
+ try{for(const line of listFiles(root).split('\n')){if(!line||line.endsWith('/')||line.startsWith('…'))continue;try{const st=fs.statSync(path.join(root,line));if(st.isFile())out.set(line,st.mtimeMs);}catch{}}}catch{}
+ return out;
+}
+// ---- quick-chat mini window (Ctrl+Shift+Q) ---------------------------------------
+let quickWin:BrowserWindow|null=null;
+let quickAccelerator='';
+function toQuick(channel:string,payload?:unknown){if(!quickWin||quickWin.isDestroyed()||quickWin.webContents.isDestroyed())return;quickWin.webContents.send(channel,payload);}
+function createQuickWindow(){
+ if(quickWin&&!quickWin.isDestroyed())return;
+ const theme=savedTheme();
+ quickWin=new BrowserWindow({width:560,height:430,frame:false,alwaysOnTop:true,skipTaskbar:true,resizable:true,show:false,backgroundColor:theme==='light'?'#f5f6f8':'#0d0f12',webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
+ quickWin.on('blur',()=>{if(quickWin&&!quickWin.isDestroyed())quickWin.hide();});
+ // Same renderer bundle; the #quick hash switches it to the mini chat view.
+ const base=process.env.VITE_DEV_SERVER_URL??pathToFileURL(path.join(__dirname,'../dist/index.html')).toString();
+ void quickWin.loadURL(base+'#quick');
+}
+function toggleQuickWindow(){
+ if(!quickWin||quickWin.isDestroyed())createQuickWindow();
+ if(!quickWin)return;
+ if(quickWin.isVisible()){quickWin.hide();return;}
+ const area=screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+ quickWin.setBounds({x:area.x+Math.round((area.width-560)/2),y:area.y+Math.round(area.height*0.18),width:560,height:430});
+ quickWin.show();quickWin.focus();toQuick('quick:shown');
+}
+// 'Ctrl+Shift+Q' → Electron accelerator. Same rules as the renderer's hotkeys:
+// at least Ctrl or Alt, single key (letter/digit/F-key).
+function hotkeyToAccelerator(h:string):string|null{
+ const parts=h.split('+').map(s=>s.trim()).filter(Boolean);
+ if(parts.length<2)return null;
+ const key=parts[parts.length-1];
+ if(!/^[A-Za-z0-9]$/.test(key)&&!/^F([1-9]|1[0-9]|2[0-4])$/.test(key))return null;
+ const mods=parts.slice(0,-1).map(m=>m==='Ctrl'?'Control':m==='Alt'?'Alt':m==='Shift'?'Shift':'');
+ if(mods.some(m=>!m)||(!mods.includes('Control')&&!mods.includes('Alt')))return null;
+ return [...mods,key.toUpperCase()].join('+');
+}
+function registerQuickHotkey(accel:string|null){
+ if(quickAccelerator){try{globalShortcut.unregister(quickAccelerator);}catch{}quickAccelerator='';}
+ if(accel){try{if(globalShortcut.register(accel,toggleQuickWindow))quickAccelerator=accel;}catch{}}
+}
+// ---- auto-updater (packaged builds only) ------------------------------------------
+// electron-updater is required lazily so a missing dev dependency can never break
+// `npm run dev`. For a private GitHub repo, releases are fetched with GH_TOKEN.
+let updateState='';
+function autoUpdaterInstance(){
+ // eslint-disable-next-line @typescript-eslint/no-require-imports
+ return (require('electron-updater') as typeof import('electron-updater')).autoUpdater;
+}
+function initAutoUpdater(){
+ if(!app.isPackaged)return;
+ try{
+  const autoUpdater=autoUpdaterInstance();
+  autoUpdater.autoDownload=true;autoUpdater.autoInstallOnAppQuit=true;
+  autoUpdater.on('checking-for-update',()=>{updateState='checking';});
+  autoUpdater.on('update-available',i=>{updateState='downloading '+i.version;});
+  autoUpdater.on('update-not-available',()=>{updateState='none';});
+  autoUpdater.on('update-downloaded',i=>{updateState='ready '+i.version;
+   if(!win||win.isDestroyed())return;
+   void dialog.showMessageBox(win,{type:'info',buttons:['Restart now','Later'],defaultId:0,cancelId:1,title:'Update ready',message:'Lumen '+i.version+' has been downloaded.',detail:'Restart to install the update.',noLink:true}).then(r=>{if(r.response===0)autoUpdater.quitAndInstall();});
+  });
+  autoUpdater.on('error',e=>{updateState='error';log('updater',e.message);});
+  void autoUpdater.checkForUpdates().catch(()=>{});
+ }catch(e){log('updater unavailable',e);}
+}
+const MESSAGE_COLUMNS='id,chat_id as chatId,role,content,created_at as createdAt,model,provider_id as providerId,prompt_tokens as promptTokens,completion_tokens as completionTokens,reasoning,finish_reason as finishReason,bookmarked,rating,(SELECT COUNT(*) FROM message_variants v WHERE v.message_id=messages.id) AS variantCount';
 const CHAT_COLUMNS='id,title,provider_id as providerId,model,updated_at as updatedAt,branched_from as branchedFrom,pinned,folder_id as folderId,workspace,archived,workspace_readonly as workspaceReadonly';
 function listChats(){
  const chats=query(`SELECT ${CHAT_COLUMNS} FROM chats ORDER BY pinned DESC, updated_at DESC`) as Array<Record<string,unknown>&{id:string}>;
@@ -303,6 +376,7 @@ function initIpc(){
   run('DELETE FROM messages WHERE chat_id=?',[id]);
   run('DELETE FROM chat_tags WHERE chat_id=?',[id]);
   run('DELETE FROM file_ops WHERE chat_id=?',[id]);
+  run('DELETE FROM chat_docs WHERE chat_id=?',[id]);
   run('DELETE FROM chats WHERE id=?',[id]);
  });
  removeAttachmentFiles(files);});
@@ -493,10 +567,11 @@ function initIpc(){
  ipcMain.handle('providers:list',()=>query('SELECT id,name,base_url as baseUrl,models,pricing,(SELECT COUNT(*) FROM secrets s WHERE s.id=providers.id)>0 AS hasKey FROM providers').map((v)=>{const p=v as {models:string;pricing:string|null;hasKey:number};let pricing:ProviderConfig['pricing'];try{pricing=p.pricing?JSON.parse(p.pricing):undefined;}catch{pricing=undefined;}return{...v,models:JSON.parse(p.models),pricing,hasKey:Number(p.hasKey)>0};}));
  ipcMain.handle('providers:save',(_e,c:unknown,key?:string)=>{const config=validateProviderConfig(c,PINNED_URLS);run('INSERT INTO providers(id,name,base_url,models,pricing) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,models=excluded.models,pricing=excluded.pricing',[config.id,config.name,config.baseUrl,JSON.stringify(config.models),JSON.stringify(config.pricing??{})]);if(typeof key==='string'&&key){if(!safeStorage.isEncryptionAvailable())throw new Error('Windows secure storage unavailable');run('INSERT OR REPLACE INTO secrets VALUES(?,?)',[config.id,safeStorage.encryptString(key)]);}});
  ipcMain.handle('providers:remove',(_e,id:ProviderId)=>{if(!isKnownProviderId(id))return;run('DELETE FROM secrets WHERE id=?',[id]);if(id==='custom')run('DELETE FROM providers WHERE id=?',[id]);});
- ipcMain.handle('settings:get',()=>{const rows=query('SELECT key,value FROM settings') as Array<{key:string;value:string}>;const v=Object.fromEntries(rows.map(x=>[x.key,JSON.parse(x.value)]));return{theme:v.theme??'dark',systemPrompt:v.systemPrompt??'',temperature:v.temperature??0.7,maxTokens:v.maxTokens??2048,topP:v.topP??1,minimizeToTray:v.minimizeToTray===true,autoStart:v.autoStart===true,notifications:v.notifications===true,accent:v.accent??'violet',personas:Array.isArray(v.personas)?v.personas:[],personaId:typeof v.personaId==='string'?v.personaId:'',hotkeys:normalizeHotkeys(v.hotkeys),templates:Array.isArray(v.templates)?v.templates:[],defaultWorkspace:typeof v.defaultWorkspace==='string'?v.defaultWorkspace:'',customCss:typeof v.customCss==='string'?v.customCss:'',compactMode:v.compactMode===true};});ipcMain.handle('settings:save',(_e,s:Record<string,unknown>)=>{if(!s||typeof s!=='object')return;const clamped=clampSettings(s);for(const[k,v]of Object.entries(clamped))run('INSERT OR REPLACE INTO settings VALUES(?,?)',[k,JSON.stringify(v)]);if(clamped.theme)nativeTheme.themeSource=clamped.theme as 'dark'|'light';
+ ipcMain.handle('settings:get',()=>{const rows=query('SELECT key,value FROM settings') as Array<{key:string;value:string}>;const v=Object.fromEntries(rows.map(x=>[x.key,JSON.parse(x.value)]));return{theme:v.theme??'dark',systemPrompt:v.systemPrompt??'',temperature:v.temperature??0.7,maxTokens:v.maxTokens??2048,topP:v.topP??1,minimizeToTray:v.minimizeToTray===true,autoStart:v.autoStart===true,notifications:v.notifications===true,accent:v.accent??'violet',personas:Array.isArray(v.personas)?v.personas:[],personaId:typeof v.personaId==='string'?v.personaId:'',hotkeys:normalizeHotkeys(v.hotkeys),templates:Array.isArray(v.templates)?v.templates:[],defaultWorkspace:typeof v.defaultWorkspace==='string'?v.defaultWorkspace:'',customCss:typeof v.customCss==='string'?v.customCss:'',compactMode:v.compactMode===true,mcpServers:Array.isArray(v.mcpServers)?v.mcpServers:[]};});ipcMain.handle('settings:save',(_e,s:Record<string,unknown>)=>{if(!s||typeof s!=='object')return;const clamped=clampSettings(s);for(const[k,v]of Object.entries(clamped))run('INSERT OR REPLACE INTO settings VALUES(?,?)',[k,JSON.stringify(v)]);if(clamped.theme)nativeTheme.themeSource=clamped.theme as 'dark'|'light';
   // Side effects of system settings are applied here, not at next launch.
   if('autoStart' in clamped)app.setLoginItemSettings({openAtLogin:clamped.autoStart===true});
-  if('minimizeToTray' in clamped)setTray(clamped.minimizeToTray===true);});
+  if('minimizeToTray' in clamped)setTray(clamped.minimizeToTray===true);
+  if(clamped.hotkeys)registerQuickHotkey(hotkeyToAccelerator((clamped.hotkeys as HotkeyMap).quickChat));});
  ipcMain.handle('providers:test',async(_e,id:ProviderId)=>{if(!isKnownProviderId(id))return{ok:false,message:'Unknown provider'};try{await loadModels(id);return{ok:true,message:'Connection successful'};}catch(e){return{ok:false,message:e instanceof Error?e.message:'Connection failed'};}});ipcMain.handle('providers:models',(_e,id:ProviderId)=>{if(!isKnownProviderId(id))throw new Error('Unknown provider');return loadModels(id);});
  ipcMain.handle('chat:stop',(_e,requestId?:string)=>{if(typeof requestId!=='string'||!requestId)return{stopped:false};const entry=activeRequests.get(requestId);if(!entry)return{stopped:false};entry.controller.abort();return{stopped:true};});
  // Lets the renderer re-mark chats that are still streaming after a reload.
@@ -517,7 +592,7 @@ function initIpc(){
  ipcMain.handle('chat:continue',(_e,r:unknown)=>generate(r,'continue'));
  ipcMain.handle('chat:regenerate',(_e,r:unknown)=>generate(r,'regenerate'));
  ipcMain.handle('data:health',()=>({ok:!lastPersistError(),persistError:lastPersistError()}));
- ipcMain.handle('data:wipe',()=>{transaction(()=>{run('DELETE FROM attachments');run('DELETE FROM message_variants');run('DELETE FROM messages');run('DELETE FROM chats');run('DELETE FROM folders');run('DELETE FROM chat_tags');run('DELETE FROM file_ops');run("DELETE FROM settings WHERE key!='windowBounds'");});saveNow();try{fs.rmSync(attachmentsDir(),{recursive:true,force:true});}catch{}});
+ ipcMain.handle('data:wipe',()=>{transaction(()=>{run('DELETE FROM attachments');run('DELETE FROM message_variants');run('DELETE FROM messages');run('DELETE FROM chats');run('DELETE FROM folders');run('DELETE FROM chat_tags');run('DELETE FROM file_ops');run('DELETE FROM chat_docs');run("DELETE FROM settings WHERE key!='windowBounds'");});saveNow();try{fs.rmSync(attachmentsDir(),{recursive:true,force:true});}catch{}});
  ipcMain.handle('data:open-folder',()=>shell.openPath(app.getPath('userData')));
  // Backup: copy the database + attachment files into a user-picked folder. The DB
  // is flushed first so the copy is consistent.
@@ -553,10 +628,159 @@ function initIpc(){
   app.relaunch();app.exit(0);
   return true;
  });
+ // 👍/👎 on an assistant answer: -1, 0 (clear) or 1.
+ ipcMain.handle('chats:rate-message',(_e,id:string,rating:unknown)=>{if(typeof id!=='string')return;const r=Number(rating);if(r!==-1&&r!==0&&r!==1)return;run('UPDATE messages SET rating=? WHERE id=?',[r,id]);});
+ // Compare mode: replay the conversation's last turn on a second provider/model
+ // (non-streaming mini-request) and return both answers side by side. The current
+ // chat's answer is read from the DB — no extra call to the current provider.
+ ipcMain.handle('chats:compare',async(_e,id:string,otherProviderId:unknown,otherModel:unknown)=>{
+  if(typeof id!=='string')throw new Error('Invalid chat');
+  if(!isKnownProviderId(otherProviderId))throw new Error('Unknown provider');
+  if(typeof otherModel!=='string'||!otherModel.trim()||otherModel.length>200)throw new Error('No model selected');
+  const chat=one('SELECT provider_id as providerId,model FROM chats WHERE id=?',[id]) as {providerId:ProviderId;model:string}|undefined;
+  if(!chat)throw new Error('Chat not found');
+  const msgs=query('SELECT role,content FROM messages WHERE chat_id=? ORDER BY created_at',[id]) as Array<{role:string;content:string}>;
+  const lastAssistant=[...msgs].reverse().find(m=>m.role==='assistant');
+  const transcript=normalizeHistory(trimHistory(msgs.map(m=>({role:m.role,content:m.content})))).map(m=>(m.role==='user'?'User':'Assistant')+': '+m.content).join('\n\n').slice(0,60000);
+  if(!transcript)throw new Error('Nothing to compare yet');
+  const sysRow=one("SELECT value FROM settings WHERE key='systemPrompt'") as {value:string}|undefined;let sys='';try{sys=sysRow?String(JSON.parse(sysRow.value)):'';}catch{}
+  const prompt=(sys?sys+'\n\n':'')+'Continue this conversation by answering the last user message.\n\n'+transcript;
+  const out:CompareAnswer[]=[{providerId:chat.providerId,model:chat.model,text:lastAssistant?.content??''}];
+  try{
+   const text=await miniRequest(getProvider(otherProviderId),otherModel.trim(),prompt,2048);
+   if(!text.trim())throw new Error('empty response');
+   out.push({providerId:otherProviderId,model:otherModel.trim(),text:text.trim()});
+  }catch(e){out.push({providerId:otherProviderId,model:otherModel.trim(),text:'',error:e instanceof Error?e.message:'failed'});}
+  return out;
+ });
+ // ---- attached documents (RAG-lite) ----------------------------------------------
+ ipcMain.handle('chats:docs',(_e,id:string)=>{if(typeof id!=='string')return[];return query('SELECT id,chat_id as chatId,name,length(content) as chars,created_at as createdAt FROM chat_docs WHERE chat_id=? ORDER BY created_at',[id]);});
+ ipcMain.handle('chats:attach-doc',async(_e,id:string)=>{
+  if(typeof id!=='string')return null;
+  if(!one('SELECT id FROM chats WHERE id=?',[id]))return null;
+  const count=Number(one('SELECT COUNT(*) AS n FROM chat_docs WHERE chat_id=?',[id])?.n??0);
+  if(count>=MAX_DOCS_PER_CHAT)throw new Error('This chat already has the maximum of '+MAX_DOCS_PER_CHAT+' documents');
+  const result=await dialog.showOpenDialog(win,{title:'Attach a document',properties:['openFile'],filters:[{name:'Documents',extensions:['txt','md','markdown','pdf','json','csv','log','html','xml','yaml','yml','ts','tsx','js','jsx','py','java','cs','cpp','c','h','rs','go','sql','css']}]});
+  if(result.canceled||!result.filePaths[0])return null;
+  const file=path.resolve(result.filePaths[0]);
+  if(fs.statSync(file).size>20*1024*1024)throw new Error('File too large (max 20 MB)');
+  let text:string;
+  try{
+   if(file.toLowerCase().endsWith('.pdf')){
+    // Lazy require: pdf-parse is only needed when a PDF is actually attached.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pdfParse=require('pdf-parse') as (b:Buffer)=>Promise<{text:string}>;
+    text=(await pdfParse(fs.readFileSync(file))).text;
+   }else{
+    const buf=fs.readFileSync(file);
+    if(buf.includes(0))throw new Error('binary file');
+    text=buf.toString('utf8');
+   }
+  }catch(e){throw new Error('Could not read text: '+(e instanceof Error?e.message:'unknown'),{cause:e});}
+  text=text.replace(/\0/g,'').trim();
+  if(!text)throw new Error('No readable text found in this file');
+  if(text.length>MAX_DOC_CHARS)text=text.slice(0,MAX_DOC_CHARS)+'\n… (truncated)';
+  const doc:ChatDoc={id:randomUUID(),chatId:id,name:path.basename(file).slice(0,120),chars:text.length,createdAt:Date.now()};
+  run('INSERT INTO chat_docs(id,chat_id,name,content,created_at) VALUES(?,?,?,?,?)',[doc.id,id,doc.name,text,doc.createdAt]);
+  return doc;
+ });
+ ipcMain.handle('chats:remove-doc',(_e,docId:string)=>{if(typeof docId!=='string')return;run('DELETE FROM chat_docs WHERE id=?',[docId]);});
+ // Zip export: markdown + JSON + attachment files, packed via PowerShell's
+ // Compress-Archive (this build is Windows-only).
+ ipcMain.handle('chats:export-zip',async(_e,id:string)=>{
+  if(typeof id!=='string')return null;
+  const chat=one('SELECT title FROM chats WHERE id=?',[id]) as {title:string}|undefined;if(!chat)return null;
+  const msgs=listMessages(id) as unknown as Array<{role:string;content:string;createdAt:number;attachments?:Array<{id:string;name:string}>}>;
+  const safeName=(chat.title.replace(/[\\/:*?"<>|]/g,'').trim()||'lumen-chat').slice(0,60);
+  const result=await dialog.showSaveDialog(win,{defaultPath:safeName+'.zip',filters:[{name:'Zip archive',extensions:['zip']}]});
+  if(!result.filePath)return null;
+  const target=result.filePath.toLowerCase().endsWith('.zip')?result.filePath:result.filePath+'.zip';
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'lumen-zip-'));
+  try{
+   const md=['# '+chat.title,'',...msgs.map(m=>'## '+(m.role==='user'?'User':'Assistant')+' — '+new Date(m.createdAt).toLocaleString()+'\n\n'+m.content)].join('\n\n');
+   fs.writeFileSync(path.join(tmp,'conversation.md'),md,'utf8');
+   fs.writeFileSync(path.join(tmp,'messages.json'),JSON.stringify(msgs,null,2),'utf8');
+   const attDir=path.join(tmp,'attachments');let copied=0;
+   for(const m of msgs)for(const a of m.attachments??[]){
+    const src=path.join(attachmentsDir(),a.id);
+    if(!fs.existsSync(src))continue;
+    if(!copied)fs.mkdirSync(attDir,{recursive:true});
+    fs.copyFileSync(src,path.join(attDir,a.id+'-'+a.name.replace(/[\\/:*?"<>|]/g,'_').slice(0,80)));copied++;
+   }
+   await new Promise<void>((resolve,reject)=>{execFile('powershell.exe',['-NoProfile','-Command',"Compress-Archive -LiteralPath '"+tmp.replace(/'/g,"''")+"\\*' -DestinationPath '"+target.replace(/'/g,"''")+"' -Force"],{timeout:120000},err=>err?reject(err):resolve());});
+   return target;
+  }finally{try{fs.rmSync(tmp,{recursive:true,force:true});}catch{}}
+ });
+ // @file autocomplete: workspace file paths filtered by a substring.
+ ipcMain.handle('chats:list-workspace-files',(_e,id:string,q:string)=>{
+  if(typeof id!=='string'||typeof q!=='string')return[];
+  const chat=one('SELECT workspace FROM chats WHERE id=?',[id]) as {workspace:string|null}|undefined;
+  let root=chat?.workspace||'';
+  if(!root){const def=one("SELECT value FROM settings WHERE key='defaultWorkspace'") as {value:string}|undefined;try{const d=def?JSON.parse(def.value):'';if(typeof d==='string'&&d&&fs.existsSync(d)&&fs.statSync(d).isDirectory())root=path.resolve(d);}catch{}}
+  if(!root)return[];
+  let all:string[];try{all=listFiles(root).split('\n').filter(l=>l&&!l.endsWith('/')&&!l.startsWith('…'));}catch{return[];}
+  const needle=q.trim().toLowerCase().slice(0,100);
+  const hits=needle?all.filter(l=>l.toLowerCase().includes(needle)):all;
+  return hits.slice(0,50);
+ });
+ // ---- quick chat + updates ---------------------------------------------------------
+ ipcMain.handle('quick:ask',async(_e,text:unknown)=>{
+  if(typeof text!=='string'||!text.trim()||text.length>4000)throw new Error('Message is empty or too long');
+  const row=one('SELECT provider_id as p,model as m FROM chats ORDER BY updated_at DESC LIMIT 1') as {p:ProviderId;m:string}|undefined;
+  const p=getProvider(row?.p??'openai');
+  const sysRow=one("SELECT value FROM settings WHERE key='systemPrompt'") as {value:string}|undefined;let sys='';try{sys=sysRow?String(JSON.parse(sysRow.value)):'';}catch{}
+  const out=await miniRequest(p,row?.m??'gpt-4o-mini',(sys?sys+'\n\n':'')+text.trim(),1024);
+  if(!out.trim())throw new Error('The provider returned nothing usable — try again');
+  return out.trim();
+ });
+ ipcMain.on('quick:hide',()=>{if(quickWin&&!quickWin.isDestroyed())quickWin.hide();});
+ ipcMain.handle('updates:check',async()=>{
+  if(!app.isPackaged)return 'Updates are only checked in the installed app';
+  try{await autoUpdaterInstance().checkForUpdates();return updateState==='none'?'You are up to date':updateState==='checking'||!updateState?'Checking…':updateState;}catch(e){return 'Update check failed: '+(e instanceof Error?e.message:'unknown');}
+ });
+ ipcMain.on('updates:install',()=>{try{autoUpdaterInstance().quitAndInstall();}catch{}});
  ipcMain.on('window:always-on-top',(_e,on:unknown)=>{if(win&&!win.isDestroyed())win.setAlwaysOnTop(on===true);});
 }
 function getProvider(id:ProviderId):ResolvedProvider{const p=one('SELECT * FROM providers WHERE id=?',[id]) as {id:string;name:string;base_url:string}|undefined;if(!p)throw new Error('Provider not configured');const secret=one('SELECT value FROM secrets WHERE id=?',[id]) as {value:Buffer}|undefined;let key='';if(secret){try{key=safeStorage.decryptString(secret.value);}catch{throw new Error('Saved API key could not be decrypted on this device. Re-enter it in Settings.');}}else if(!isLoopbackUrl(p.base_url))throw new Error('Add an API key for '+p.name+' in Settings');return{id:p.id as ProviderId,name:p.name,url:p.base_url.replace(/\/$/,''),key};}
 async function loadModels(id:ProviderId){const p=getProvider(id);const{url,headers}=buildModelsRequest(p);const response=await fetch(url,{headers,signal:AbortSignal.timeout(15000)});if(!response.ok)throw new Error('HTTP '+response.status);const data=await response.json() as {data?:Array<{id?:string}>;models?:Array<{name?:string}>};return data.data?data.data.map(x=>x.id??'').filter(Boolean):((data.models??[]).map(x=>x.name??'').filter(Boolean));}
+
+// Sub-agent (spawn_subagent): a bounded nested tool loop with read-only tools only
+// — no approval dialog, no writes, max 3 rounds. It investigates and reports back,
+// keeping the main conversation's context clean.
+const SUBAGENT_TOOLS=new Set(['list_files','read_file','read_many','search_files','find_definition','find_references','get_file_info','diff_files','git_status','git_diff','memory_read','sql_query']);
+async function runSubagent(p:ResolvedProvider,model:string,task:string,workspace:string|null,signal:AbortSignal):Promise<string>{
+ const subDefs=TOOL_DEFS.filter(t=>SUBAGENT_TOOLS.has(t.name));
+ const sys='You are a read-only research sub-agent inside a chat app. Investigate the task with the file tools, then give a compact final answer (facts + file references). You cannot write files, run commands or access the network.';
+ const wire:HistoryMessage[]=[{role:'user',content:task.slice(0,4000)}];
+ for(let round=0;round<3;round++){
+  const{url,headers,body}=buildChatRequest(p,wire,{model,systemPrompt:sys,temperature:0.2,maxTokens:2048,topP:1,tools:workspace?subDefs:undefined});
+  const response=await fetch(url,{method:'POST',headers,body:JSON.stringify(body),signal});
+  if(!response.ok||!response.body)throw new Error('sub-agent request failed (HTTP '+response.status+')');
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';let text='';const calls=new Map<number,ToolCallRecord>();let geminiSeq=0;
+  while(true){
+   const result=await reader.read();if(result.done)break;buffer+=decoder.decode(result.value,{stream:true});
+   const lines=buffer.split(/\r?\n/);buffer=lines.pop()??'';
+   for(const line of lines){
+    const t=parseSseEvent(line);if(t)text+=t;
+    for(const ev of p.id==='anthropic'?parseAnthropicToolEvent(line):p.id==='gemini'?parseGeminiToolCall(line,geminiSeq):parseToolCallDelta(line)){
+     if(ev.kind==='call-start')calls.set(ev.index,{id:ev.id,name:ev.name,args:''});
+     else if(ev.kind==='call-args'){const c=calls.get(ev.index);if(c)c.args+=ev.chunk;}
+     else if(ev.kind==='call-complete'){geminiSeq++;calls.set(1000+geminiSeq,{id:ev.id,name:ev.name,args:ev.args});}
+    }
+   }
+  }
+  if(!calls.size||!workspace)return text.trim()||'(sub-agent returned nothing)';
+  wire.push({role:'assistant',content:text,toolCalls:[...calls.values()]});
+  const results:Array<{toolCallId:string;name:string;content:string}>=[];
+  for(const call of calls.values()){
+   if(!SUBAGENT_TOOLS.has(call.name)){results.push({toolCallId:call.id,name:call.name,content:'Sub-agents may only use read-only tools'});continue;}
+   const out=await runToolCall(workspace,call,async()=>false,{readonly:true});
+   results.push({toolCallId:out.toolCallId,name:out.name,content:out.content.slice(0,8000)});
+  }
+  wire.push({role:'user',content:'',toolResults:results});
+ }
+ return '(sub-agent hit its round limit without a final answer)';
+}
 
 type GenMode='send'|'continue'|'regenerate';
 async function generate(raw:unknown,mode:GenMode){
@@ -643,7 +867,6 @@ async function generate(raw:unknown,mode:GenMode){
    try{const d=def?JSON.parse(def.value):'';if(typeof d==='string'&&d&&fs.existsSync(d)&&fs.statSync(d).isDirectory())workspace=path.resolve(d);}catch{}
   }
   const workspaceReadonly=!!chatRow?.workspace_readonly;
-  const tools=workspace?TOOL_DEFS:undefined;
   let sysPrompt=r.systemPrompt;
   if(workspace){
    sysPrompt=(sysPrompt?sysPrompt+'\n\n':'')+WORKSPACE_PROMPT+'\nWorkspace root: '+workspace;
@@ -652,7 +875,45 @@ async function generate(raw:unknown,mode:GenMode){
    try{const rulesPath=path.join(workspace,'LUMEN.md');if(fs.existsSync(rulesPath))sysPrompt+='\n\nProject rules (LUMEN.md):\n'+fs.readFileSync(rulesPath,'utf8').slice(0,8192);}catch{}
    if(!rows.length){try{sysPrompt+='\n\nProject tree:\n'+listFiles(workspace);}catch{}}
    if(workspaceReadonly)sysPrompt+='\n\nREAD-ONLY MODE: the user has disabled all write/edit/command tools for this chat. Read, search and advise only.';
+   // watch_files: report what changed on disk outside the app since the previous
+   // answer, so the model re-reads before overwriting unseen edits.
+   const prevSnap=workspaceSnapshots.get(r.chatId);
+   if(prevSnap){
+    const nowSnap=snapshotWorkspace(workspace);const changed:string[]=[];
+    for(const [f,m]of nowSnap){const old=prevSnap.get(f);if(old===undefined)changed.push(f+' (new)');else if(old!==m)changed.push(f);}
+    for(const f of prevSnap.keys())if(!nowSnap.has(f))changed.push(f+' (deleted)');
+    if(changed.length)sysPrompt+='\n\nFiles changed outside this chat since your last answer: '+changed.slice(0,30).join(', ')+(changed.length>30?' …':'')+'. Read them again before editing.';
+   }
   }
+  // Attached documents (RAG-lite): fixed-size chunks ranked by keyword overlap
+  // with the current message; the best few are injected into the system prompt.
+  if(mode!=='continue'){
+   const docs=query('SELECT name,content FROM chat_docs WHERE chat_id=?',[r.chatId]) as Array<{name:string;content:string}>;
+   if(docs.length){
+    const terms=[...new Set(r.content.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(t=>t.length>2))].slice(0,40);
+    const scored:Array<{name:string;chunk:string;score:number}>=[];
+    for(const d of docs)for(let i=0;i<d.content.length;i+=1500){const c=d.content.slice(i,i+1800);const low=c.toLowerCase();let score=0;for(const t of terms)if(low.includes(t))score++;if(score>0)scored.push({name:d.name,chunk:c,score});}
+    scored.sort((a,b)=>b.score-a.score);
+    let block='';let budget=8000;
+    for(const s of scored.slice(0,6)){const piece='\n<doc name="'+s.name.replace(/"/g,'')+'">\n'+s.chunk.trim()+'\n</doc>';if(budget-piece.length<0)break;budget-=piece.length;block+=piece;}
+    if(block)sysPrompt+='\n\nAttached documents (relevant excerpts — answer from them when the question matches):'+block;
+   }
+  }
+  // MCP servers from Settings extend the tool list; their tools are namespaced
+  // mcp__<serverId>__<tool> and routed in the dispatch loop below. A server that
+  // fails to start is skipped with a note instead of failing the generation.
+  const mcpByName=new Map<string,{server:string;remote:string}>();
+  const mcpDefs:ToolDef[]=[];
+  try{
+   const mcpRow=one("SELECT value FROM settings WHERE key='mcpServers'") as {value:string}|undefined;
+   const servers:unknown=mcpRow?JSON.parse(mcpRow.value):[];
+   if(Array.isArray(servers))for(const s of servers as McpServer[]){
+    if(!s||typeof s.id!=='string'||typeof s.command!=='string')continue;
+    try{for(const info of await mcpTools(s.id,s.command)){mcpDefs.push(info.def);mcpByName.set(info.def.name,{server:info.server,remote:info.remoteName});}}
+    catch(e){const note='\n⚠️ MCP server "'+String(s.name??s.id)+'" unavailable: '+(e instanceof Error?e.message:'failed')+'\n';reasoning+=note;toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text:'',reasoning:note});}
+   }
+  }catch{}
+  const tools=(workspace||mcpDefs.length)?[...(workspace?TOOL_DEFS:[]),...mcpDefs]:undefined;
   // Every mutation/command/fetch passes through this native dialog. Writes include
   // a diff preview so the user sees WHAT changes, not just where.
   const approve:ApproveFn=async req=>{
@@ -670,7 +931,9 @@ async function generate(raw:unknown,mode:GenMode){
   const wire:HistoryMessage[]=[...history];
   let rounds=0;let toolChars=0;
   const logOp=(tool:string,pathArg:string|null,status:'ok'|'error'|'declined',detail:string|null,snapshot:string|null)=>{
-   try{run('INSERT INTO file_ops VALUES(?,?,?,?,?,?,?,?)',[randomUUID(),r.chatId,tool,pathArg,status,detail,snapshot,Date.now()]);}catch{}};
+   try{const id=randomUUID();const createdAt=Date.now();run('INSERT INTO file_ops VALUES(?,?,?,?,?,?,?,?)',[id,r.chatId,tool,pathArg,status,detail,snapshot,createdAt]);
+   // Mirrored to the renderer so it can show an actionable toast (e.g. Rollback).
+   toRenderer('chats:file-op',{id,chatId:r.chatId,tool,path:pathArg,status,detail,snapshot,createdAt} satisfies FileOp);}catch{}};
   for(;;){
    const{url,headers,body}=buildChatRequest(p,wire,{model:r.model,systemPrompt:sysPrompt,temperature:r.temperature,maxTokens:r.maxTokens,topP:r.topP,tools});
    const response=await fetch(url,{method:'POST',headers,body:JSON.stringify(body),signal});
@@ -684,7 +947,7 @@ async function generate(raw:unknown,mode:GenMode){
     const lines=buffer.split(/\r?\n/);buffer=lines.pop()??'';
     for(const line of lines){
      const text=parseSseEvent(line);const thought=parseReasoningEvent(line);const fin=p.id==='anthropic'?parseAnthropicFinish(line):parseFinishReason(line);if(fin)finish=fin;if(p.id==='anthropic')usage=parseAnthropicUsage(line,usage);else usage=parseUsageEvent(line)??usage;if(text){answer+=text;roundText+=text;toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text});}if(thought){reasoning+=thought;toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text:'',reasoning:thought});}
-     if(workspace){
+     if(tools){
       const events=p.id==='anthropic'?parseAnthropicToolEvent(line):p.id==='gemini'?parseGeminiToolCall(line,geminiSeq):parseToolCallDelta(line);
       for(const ev of events){
        if(ev.kind==='call-start')toolCalls.set(ev.index,{id:ev.id,name:ev.name,args:''});
@@ -698,7 +961,7 @@ async function generate(raw:unknown,mode:GenMode){
    // Any accumulated call is honored even without an explicit tool-stop signal —
    // some OpenAI-compatible servers omit finish_reason entirely. The loop also
    // stops when tool output has eaten its context budget for this answer.
-   const doToolRound=!!workspace&&toolCalls.size>0&&rounds<MAX_TOOL_ROUNDS&&toolChars<MAX_TOOL_BUDGET_CHARS&&!signal.aborted;
+   const doToolRound=!!tools&&toolCalls.size>0&&rounds<MAX_TOOL_ROUNDS&&toolChars<MAX_TOOL_BUDGET_CHARS&&!signal.aborted;
    if(!doToolRound)break;
    rounds++;
    wire.push({role:'assistant',content:roundText,toolCalls:[...toolCalls.values()]});
@@ -707,11 +970,26 @@ async function generate(raw:unknown,mode:GenMode){
    // stalled stream, so the watchdog stands down while tools run.
    if(watchdog){clearTimeout(watchdog);watchdog=null;}
    for(const call of toolCalls.values()){
-    let hint='';try{const a=JSON.parse(call.args||'{}') as Record<string,unknown>;hint=String(a.path??a.query??a.command??a.url??'').slice(0,120);}catch{}
+    let hint='';try{const a=JSON.parse(call.args||'{}') as Record<string,unknown>;hint=String(a.path??a.query??a.command??a.url??a.task??a.symbol??'').slice(0,120);}catch{}
     const note='\n🔧 **'+call.name+'**'+(hint?' `'+hint+'`':'')+'\n';
     reasoning+=note;
     toRenderer('chat:chunk',{requestId:r.requestId,chatId:r.chatId,text:'',reasoning:note,status:'Running '+call.name+'…'});
-    const res=await runToolCall(workspace as string,call,approve,{readonly:workspaceReadonly});
+    toRenderer('chat:tool',{chatId:r.chatId,ev:{name:call.name,hint,status:'running'} satisfies ToolEvent});
+    let res:ToolResult;
+    const mcpRoute=mcpByName.get(call.name);
+    if(mcpRoute){
+     try{let args:Record<string,unknown>={};try{args=JSON.parse(call.args||'{}') as Record<string,unknown>;}catch{}res={toolCallId:call.id,name:call.name,content:await mcpCall(mcpRoute.server,mcpRoute.remote,args)};}
+     catch(e){res={toolCallId:call.id,name:call.name,content:'MCP call failed: '+(e instanceof Error?e.message:'unknown'),isError:true};}
+    }else if(call.name==='spawn_subagent'){
+     let task='';try{task=String((JSON.parse(call.args||'{}') as Record<string,unknown>).task??'');}catch{}
+     if(!task.trim())res={toolCallId:call.id,name:call.name,content:'No task given',isError:true};
+     else{try{res={toolCallId:call.id,name:call.name,content:await runSubagent(p,r.model,task,workspace,signal)};}catch(e){res={toolCallId:call.id,name:call.name,content:'Sub-agent failed: '+(e instanceof Error?e.message:'unknown'),isError:true};}}
+    }else if(!workspace){
+     res={toolCallId:call.id,name:call.name,content:'Workspace tools are unavailable: this chat has no workspace folder.',isError:true};
+    }else{
+     res=await runToolCall(workspace,call,approve,{readonly:workspaceReadonly});
+    }
+    toRenderer('chat:tool',{chatId:r.chatId,ev:{name:call.name,hint,status:res.isError?(res.content.includes('declined')?'declined':'error'):'ok',bytes:res.content.length} satisfies ToolEvent});
     toolChars+=res.content.length;
     // todo_write updates the per-chat checklist: persist + mirror to the panel.
     if(call.name==='todo_write'&&!res.isError){
@@ -740,6 +1018,9 @@ async function generate(raw:unknown,mode:GenMode){
    }
    armWatchdog();
   }
+  // The watch_files baseline moves to after this answer, so the model's own edits
+  // are not reported back as external changes next time.
+  if(workspace)workspaceSnapshots.set(r.chatId,snapshotWorkspace(workspace));
   const aborted=signal.aborted&&!timedOut;const empty=!answer.trim()&&!reasoning.trim();
   const emptyError=empty&&!aborted?(finish==='content_filter'?'The provider filtered this response':finish==='refusal'?'The model declined to answer':'Provider returned an empty response'):undefined;
   // Persist only when the chat still exists and there is something worth keeping.
@@ -789,10 +1070,11 @@ if(!app.requestSingleInstanceLock())app.quit();else{
   });
   const traySetting=one("SELECT value FROM settings WHERE key='minimizeToTray'") as {value:string}|undefined;
   if(traySetting){try{if(JSON.parse(traySetting.value)===true)setTray(true);}catch{}}
-  createWindow();log('ready');
+  createWindow();createQuickWindow();initAutoUpdater();log('ready');
+  try{const hk=one("SELECT value FROM settings WHERE key='hotkeys'") as {value:string}|undefined;registerQuickHotkey(hotkeyToAccelerator(normalizeHotkeys(hk?JSON.parse(hk.value):undefined).quickChat));}catch{}
   if(st.recovered)void dialog.showMessageBox(win,{type:'warning',title:'Database recovered',message:'Your previous database could not be read, so a fresh one was started.',detail:'The unreadable file was kept at:\n'+(st.backupPath??'(unknown)')+'\n\nSaved API keys are tied to that file and must be entered again.'});
   app.on('activate',()=>{if(!BrowserWindow.getAllWindows().length)createWindow();});
  }).catch(e=>{dialog.showErrorBox('Lumen failed to start',e instanceof Error?e.message:String(e));app.quit();});
  app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
- app.on('before-quit',()=>{quitting=true;saveNow();});
+ app.on('before-quit',()=>{quitting=true;globalShortcut.unregisterAll();mcpShutdown();saveNow();});
 }

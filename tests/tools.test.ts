@@ -8,6 +8,7 @@ import {
   unifiedDiff, editWorkspaceFile, applyPatch, readMany, getFileInfo, diffFiles,
   createFolder, deleteWorkspaceFile, moveWorkspaceFile, snapshotFile, restoreSnapshot,
   memoryRead, memorySave, normalizeTodos, findDefinition, findReferences, runCommand,
+  sqlQuery,
 } from '../electron/tools';
 
 // Every test works in a fresh temp workspace; a second temp dir plays the role of
@@ -312,5 +313,47 @@ describe('runToolCall', () => {
     fs.writeFileSync(path.join(root, 'f.txt'), '');
     const res = await runToolCall(root, { id: 't5', name: 'list_files', args: '' }, approveAll);
     expect(res.content).toContain('f.txt');
+  });
+});
+
+describe('sqlQuery', () => {
+  it('runs a SELECT over a CSV file as table "data"', async () => {
+    fs.writeFileSync(path.join(root, 'sales.csv'), 'city,amount\nParis,10\nLyon,20\nParis,30\n');
+    const out = await sqlQuery(root, 'sales.csv', 'SELECT city, SUM(CAST(amount AS INTEGER)) AS total FROM data GROUP BY city ORDER BY total DESC');
+    expect(out).toContain('Paris');
+    expect(out).toContain('40');
+    expect(out).toContain('total');
+  });
+  it('runs a SELECT over a .sqlite file', async () => {
+    const init = (await import('sql.js')).default;
+    const SQL = await init({ locateFile: (f: string) => path.join(process.cwd(), 'node_modules/sql.js/dist', f) });
+    const src = new SQL.Database();
+    src.run('CREATE TABLE t(name TEXT, n INTEGER)');
+    src.run("INSERT INTO t VALUES('alpha', 1), ('beta', 2)");
+    fs.writeFileSync(path.join(root, 'data.sqlite'), Buffer.from(src.export()));
+    src.close();
+    const out = await sqlQuery(root, 'data.sqlite', 'SELECT name FROM t WHERE n > 1');
+    expect(out).toContain('beta');
+    expect(out).not.toContain('alpha');
+  });
+  it('rejects non-SELECT statements and stacked queries', async () => {
+    fs.writeFileSync(path.join(root, 'a.csv'), 'x\n1\n');
+    await expect(sqlQuery(root, 'a.csv', 'DELETE FROM data')).rejects.toThrow(/SELECT/);
+    await expect(sqlQuery(root, 'a.csv', 'SELECT 1; DROP TABLE data')).rejects.toThrow(/single statement/);
+  });
+  it('rejects paths outside the workspace and missing files', async () => {
+    await expect(sqlQuery(root, '../escape.csv', 'SELECT 1')).rejects.toThrow();
+    await expect(sqlQuery(root, 'nope.csv', 'SELECT 1')).rejects.toThrow(/No such file/);
+  });
+  it('works through runToolCall as the sql_query tool', async () => {
+    fs.writeFileSync(path.join(root, 'b.csv'), 'n\n5\n');
+    const res = await runToolCall(root, { id: 'sq1', name: 'sql_query', args: JSON.stringify({ path: 'b.csv', query: 'SELECT n FROM data' }) }, approveAll);
+    expect(res.isError).toBeFalsy();
+    expect(res.content).toContain('5');
+  });
+  it('spawn_subagent is answered by the app core, not the dispatcher', async () => {
+    const res = await runToolCall(root, { id: 'sa1', name: 'spawn_subagent', args: JSON.stringify({ task: 'look around' }) }, approveAll);
+    expect(res.isError).toBe(true);
+    expect(res.content).toMatch(/app core/);
   });
 });

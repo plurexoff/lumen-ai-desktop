@@ -6,7 +6,7 @@ let db:Database;let filePath:string;let saveTimer:NodeJS.Timeout|null=null;
 const SAVE_DEBOUNCE_MS=250;
 // Bumped whenever the schema changes; stored in `PRAGMA user_version` so an old
 // install can be migrated forward and a too-new file can be refused outright.
-export const SCHEMA_VERSION=6;
+export const SCHEMA_VERSION=7;
 
 export interface DbStatus{recovered:boolean;backupPath:string|null;newerVersion:number|null;}
 let status:DbStatus={recovered:false,backupPath:null,newerVersion:null};
@@ -62,6 +62,9 @@ function createSchema(){
  db.run('CREATE TABLE IF NOT EXISTS chat_tags(chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,tag TEXT NOT NULL,PRIMARY KEY(chat_id,tag))');
  db.run('CREATE TABLE IF NOT EXISTS file_ops(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,tool TEXT NOT NULL,path TEXT,status TEXT NOT NULL,detail TEXT,snapshot TEXT,created_at INTEGER NOT NULL)');
  db.run('CREATE INDEX IF NOT EXISTS idx_file_ops_chat ON file_ops(chat_id,created_at)');
+ // v7: documents for retrieval (RAG) and answer ratings.
+ db.run('CREATE TABLE IF NOT EXISTS chat_docs(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,name TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL)');
+ db.run('CREATE INDEX IF NOT EXISTS idx_chat_docs_chat ON chat_docs(chat_id)');
 }
 
 function ensureColumn(table:string,column:string,decl:string){const info=db.exec(`PRAGMA table_info(${table})`)[0];const cols=info?info.values.map(v=>String(v[1])):[];if(!cols.includes(column))db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);}
@@ -108,6 +111,12 @@ function migrate(from:number){
   db.run('CREATE TABLE IF NOT EXISTS chat_tags(chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,tag TEXT NOT NULL,PRIMARY KEY(chat_id,tag))');
   db.run('CREATE TABLE IF NOT EXISTS file_ops(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,tool TEXT NOT NULL,path TEXT,status TEXT NOT NULL,detail TEXT,snapshot TEXT,created_at INTEGER NOT NULL)');
   db.run('CREATE INDEX IF NOT EXISTS idx_file_ops_chat ON file_ops(chat_id,created_at)');
+ }
+ if(from<7){
+  // v7: retrieval documents attached to a chat, and 👍/👎 ratings on answers.
+  db.run('CREATE TABLE IF NOT EXISTS chat_docs(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,name TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_chat_docs_chat ON chat_docs(chat_id)');
+  ensureColumn('messages','rating','INTEGER NOT NULL DEFAULT 0');
  }
  db.run(`PRAGMA user_version=${SCHEMA_VERSION}`);
 }

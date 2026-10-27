@@ -184,4 +184,22 @@ describe('corruption and versioning', () => {
     expect(one('SELECT tag FROM chat_tags WHERE chat_id=?', ['c1'])).toEqual({ tag: 'work' });
     expect(one('SELECT tool FROM file_ops WHERE id=?', ['op1'])).toEqual({ tool: 'write_file' });
   });
+
+  it('migrates a v6 database to v7: chat_docs table and the messages.rating column', async () => {
+    await openDatabase();
+    insertChat('c1', 'v6 chat');
+    run('INSERT INTO messages(id,chat_id,role,content,created_at) VALUES(?,?,?,?,?)', ['m1', 'c1', 'assistant', 'hi', 1]);
+    run('PRAGMA user_version=6');
+    saveNow();
+    await openDatabase();
+    expect(pragmaValue('user_version')).toBe(SCHEMA_VERSION);
+    // The rating column exists and defaults to 0 for pre-existing rows.
+    expect(one('SELECT rating FROM messages WHERE id=?', ['m1'])).toEqual({ rating: 0 });
+    // chat_docs works: attach a document and read its metadata back.
+    run('INSERT INTO chat_docs(id,chat_id,name,content,created_at) VALUES(?,?,?,?,?)', ['d1', 'c1', 'notes.md', 'hello world', 1]);
+    expect(one('SELECT name FROM chat_docs WHERE chat_id=?', ['c1'])).toEqual({ name: 'notes.md' });
+    // Ratings accept -1/0/1.
+    run('UPDATE messages SET rating=? WHERE id=?', [1, 'm1']);
+    expect(one('SELECT rating FROM messages WHERE id=?', ['m1'])).toEqual({ rating: 1 });
+  });
 });

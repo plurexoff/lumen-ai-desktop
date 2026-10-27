@@ -347,3 +347,65 @@ html{background:#0c0d10}body{font-size:13px;line-height:1.4}.titlebar{font-size:
 .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 25px 100px #0008;padding:20px 22px;max-height:80vh;display:flex;flex-direction:column}
 .modal>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .modal>header h2{display:flex;align-items:center;gap:8px;font-size:16px;margin:0}
+
+@keyframes pulse{50%{opacity:.4}}
+/* ---- batch 6 -------------------------------------------------------------- */
+/* Chat tabs */
+.tab-strip{display:flex;gap:2px;overflow-x:auto;padding:4px 8px 0;border-bottom:1px solid var(--line);flex:none;background:var(--bg)}
+.chat-tab{display:flex;align-items:center;gap:2px;max-width:180px;border:1px solid var(--line);border-bottom:0;border-radius:8px 8px 0 0;padding:3px 6px 3px 10px;background:transparent;color:var(--muted)}
+.chat-tab.active{background:var(--panel);color:var(--text);border-color:var(--accent)}
+.chat-tab .tab-title{border:0;background:transparent;color:inherit;font-size:11px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;padding:2px 0}
+.chat-tab .tab-close{border:0;background:transparent;color:var(--faint);cursor:pointer;border-radius:4px;padding:2px;display:grid;place-items:center}
+.chat-tab .tab-close:hover{color:var(--text);background:var(--accent-dim,#8c75c522)}
+.chat-tab .tab-busy{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.2s infinite}
+/* Command palette */
+.palette-modal{width:min(560px,90vw);padding:10px;gap:6px}
+.palette-head{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);padding:4px 6px 10px;color:var(--muted)}
+.palette-head input{flex:1;border:0;background:transparent;color:var(--text);font-size:14px;outline:none}
+.palette-list{display:flex;flex-direction:column;overflow:auto;max-height:50vh}
+.palette-list button{display:flex;align-items:center;gap:9px;border:0;background:transparent;color:var(--text);font-size:12px;padding:8px 10px;border-radius:7px;cursor:pointer;text-align:left}
+.palette-list button:hover{background:var(--accent-dim,#8c75c522)}
+.palette-list button small{margin-left:auto;color:var(--faint);font-size:10px}
+/* Compare mode */
+.compare-modal{width:min(980px,calc(100vw - 60px));max-height:84vh}
+.compare-controls{display:flex;gap:8px;margin-bottom:12px;flex:none}
+.compare-controls select{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:6px 8px;font-size:12px}
+.compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;overflow:auto;min-height:120px}
+.compare-cell{border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto}
+.compare-cell>header{display:flex;align-items:baseline;gap:8px;margin-bottom:8px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.compare-cell>header small{color:var(--faint);font-size:10px}
+.compare-error{color:#e5534b;font-size:12px}
+/* Tool cards in the streaming bubble */
+.tool-cards{display:flex;flex-direction:column;gap:4px;margin:6px 0}
+.tool-card{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:11px;color:var(--muted);background:var(--bg)}
+.tool-card .tool-name{font-weight:600;color:var(--text)}
+.tool-card .tool-hint{font-size:10px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px}
+.tool-card .tool-status{margin-left:auto;font-size:10px}
+.tool-card.ok .tool-status{color:#7bbf9b}.tool-card.error .tool-status{color:#e5534b}.tool-card.declined .tool-status{color:#d29922}
+.tool-card.running{border-color:var(--accent)}
+/* Answer ratings */
+.copy-btn.rated-up{color:#7bbf9b}.copy-btn.rated-down{color:#e5534b}
+/* Mermaid diagrams */
+.mermaid-diagram{margin:10px 0;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);overflow-x:auto}
+.mermaid-diagram svg{max-width:100%;height:auto}
+/* @file autocomplete */
+.file-menu{position:absolute;bottom:100%;left:8px;z-index:5;display:flex;flex-direction:column;min-width:260px;max-height:240px;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 30px #0006;padding:4px}
+.file-menu button{display:flex;align-items:center;gap:8px;padding:6px 10px;border:0;background:transparent;color:var(--text);font-size:11px;cursor:pointer;border-radius:6px;text-align:left}
+.file-menu button.active,.file-menu button:hover{background:var(--accent-dim,#8c75c522)}
+.file-menu button span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Actionable toast */
+.toast-action{display:flex;align-items:center;gap:10px}
+.toast-action button{border:1px solid var(--line);background:var(--accent);color:#fff;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer}
+.toast-action button[aria-label=Dismiss]{background:transparent;color:var(--muted);border:0;padding:2px}
+/* Quick chat mini window */
+.quick-shell{display:flex;flex-direction:column;height:100vh;background:var(--bg,#0d0f12);color:var(--text,#e6e6e6)}
+.quick-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line,#2a2d33);-webkit-app-region:drag}
+.quick-head b{font-size:13px;flex:1}
+.quick-head button{-webkit-app-region:no-drag}
+.quick-answer{flex:1;overflow:auto;padding:12px 14px;font-size:13px;display:flex;flex-direction:column;gap:8px}
+.quick-thinking{color:var(--muted,#9aa0a8);font-size:12px}
+.quick-error{color:#e5534b;font-size:12px}
+.quick-input{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--line,#2a2d33)}
+.quick-input textarea{flex:1;resize:none;background:var(--panel,#16181d);color:var(--text,#e6e6e6);border:1px solid var(--line,#2a2d33);border-radius:9px;padding:9px 11px;font-size:13px;outline:none;max-height:100px}
+.quick-shell .send-btn{flex:none;width:34px;height:34px;border:0;border-radius:9px;background:var(--accent,#8c75c5);color:#fff;display:grid;place-items:center;cursor:pointer}
+.quick-shell .send-btn:disabled{opacity:.5;cursor:default}

@@ -1,5 +1,5 @@
-import type { ChatRequest, FinishReason, HotkeyMap, ModelPrice, NewAttachment, Persona, PricingMap, PromptTemplate, ProviderConfig, ProviderId } from './shared';
-import { ACCENTS, DEFAULT_HOTKEYS, IMAGE_MIMES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_PERSONAS, MAX_TEMPLATES, PERSONA_COLORS } from './shared';
+import type { ChatRequest, FinishReason, HotkeyMap, McpServer, ModelPrice, NewAttachment, Persona, PricingMap, PromptTemplate, ProviderConfig, ProviderId } from './shared';
+import { ACCENTS, DEFAULT_HOTKEYS, IMAGE_MIMES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_MCP_SERVERS, MAX_PERSONAS, MAX_TEMPLATES, PERSONA_COLORS } from './shared';
 
 export interface ResolvedProvider { id: string; name: string; url: string; key: string; }
 // `images` are base64 payloads inlined into the provider request (all supported
@@ -406,6 +406,26 @@ export function clampSettings(input: Record<string, unknown>): Record<string, un
  // main process (no IPC surface is exposed to CSS).
  if ('customCss' in input) out.customCss = typeof input.customCss === 'string' ? input.customCss.slice(0, 100_000) : '';
  if ('compactMode' in input) out.compactMode = input.compactMode === true;
+ if ('mcpServers' in input) {
+  const servers = validateMcpServers(input.mcpServers);
+  if (servers) out.mcpServers = servers;
+ }
+ return out;
+}
+
+// MCP servers the user connects in Settings: a name and a stdio command.
+export function validateMcpServers(input: unknown): McpServer[] | undefined {
+ if (!Array.isArray(input)) return undefined;
+ const out: McpServer[] = [];
+ for (const s of input.slice(0, MAX_MCP_SERVERS)) {
+  if (!s || typeof s !== 'object') continue;
+  const src = s as Record<string, unknown>;
+  const id = typeof src.id === 'string' && src.id && src.id.length <= 100 ? src.id : '';
+  const name = typeof src.name === 'string' ? src.name.trim().slice(0, 60) : '';
+  const command = typeof src.command === 'string' ? src.command.trim().slice(0, 300) : '';
+  if (!id || !name || !command) continue;
+  out.push({ id, name, command });
+ }
  return out;
 }
 
@@ -425,7 +445,7 @@ export function validateTemplates(input: unknown): PromptTemplate[] | undefined 
  return out;
 }
 
-const HOTKEY_ACTIONS = ['newChat', 'openSettings', 'toggleSidebar'] as const;
+const HOTKEY_ACTIONS = ['newChat', 'openSettings', 'toggleSidebar', 'quickChat'] as const;
 
 // Personas live in the settings blob, so every field is renderer-controlled and
 // must be re-validated here. Invalid entries are dropped, not fatal.

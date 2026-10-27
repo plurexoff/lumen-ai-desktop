@@ -1,8 +1,8 @@
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
-import {AlertTriangle,Archive,CheckSquare,FileClock,FolderOpen,GitFork,ListChecks,Maximize2,Minimize2,PanelLeftClose,Pin,Settings,Shield,Sparkles,X} from 'lucide-react';
+import {AlertTriangle,Archive,BookOpen,CheckSquare,Command,FileClock,FolderOpen,GitCompareArrows,GitFork,ListChecks,Maximize2,Minimize2,PanelLeftClose,Pin,Settings,Shield,Sparkles,X} from 'lucide-react';
 import {useApp} from './store';
 import type {PendingImage,Prefs,State,StreamState} from './store';
-import type {Chat,ChatChunk,FileOp,Folder,Message,MessageVariant,ProviderConfig,ProviderId,TodoItem} from '../electron/shared';
+import type {Chat,ChatChunk,ChatDoc,CompareAnswer,FileOp,Folder,Message,MessageVariant,ProviderConfig,ProviderId,TodoItem} from '../electron/shared';
 import {IMAGE_MIMES,MAX_ATTACHMENT_BYTES,MAX_IMAGE_ATTACHMENTS} from '../electron/shared';
 import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
@@ -19,7 +19,7 @@ const requestParams=(s:Prefs)=>{
  const persona=s.personas.find(p=>p.id===s.personaId);
  return{systemPrompt:persona?.prompt||s.systemPrompt,temperature:persona?.temperature??s.temperature,maxTokens:s.maxTokens,topP:s.topP};
 };
-const newStream=(requestId:string):StreamState=>({requestId,text:'',reasoning:'',error:'',finishReason:null,usage:null});
+const newStream=(requestId:string):StreamState=>({requestId,text:'',reasoning:'',error:'',finishReason:null,usage:null,toolEvents:[]});
 // btoa() takes a binary string; chunking avoids a stack overflow on multi-MB images.
 const toBase64=(buf:ArrayBuffer)=>{let s='';const bytes=new Uint8Array(buf);for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode(...bytes.subarray(i,i+0x8000));return btoa(s);};
 // Match a KeyboardEvent against a stored "Ctrl+Shift+K" combo. Cmd counts as Ctrl.
@@ -99,6 +99,20 @@ export default function App(){
  const [unread,setUnread]=useState<Set<string>>(new Set());
  // Counts replies that finished while the window was hidden — "while you were away".
  const awayCount=useRef(0);
+ // Batch 6: open-chat tabs, command palette, compare mode, attached docs (RAG),
+ // and a toast with a Rollback action when the model changes a workspace file.
+ const [openTabs,setOpenTabs]=useState<string[]>([]);
+ const [showPalette,setShowPalette]=useState(false);
+ const [paletteQuery,setPaletteQuery]=useState('');
+ const [compareOpen,setCompareOpen]=useState(false);
+ const [compareModel,setCompareModel]=useState('');
+ const [compareProvider,setCompareProvider]=useState<ProviderId>('anthropic');
+ const [compareAnswers,setCompareAnswers]=useState<CompareAnswer[]|null>(null);
+ const [compareBusy,setCompareBusy]=useState(false);
+ const [docs,setDocs]=useState<ChatDoc[]>([]);
+ const [showDocs,setShowDocs]=useState(false);
+ const [actionToast,setActionToast]=useState<{opId:string;text:string}|null>(null);
+ const actionToastTimer=useRef<ReturnType<typeof setTimeout>>();
 
  const active=chats.find(c=>c.id===activeId);
  const stream=activeId?streams[activeId]:undefined;
@@ -334,6 +348,7 @@ export default function App(){
 
  const openChat=useCallback((chat:Chat)=>{
   setUnread(prev=>{if(!prev.has(chat.id))return prev;const n=new Set(prev);n.delete(chat.id);return n;});
+  setOpenTabs(prev=>prev.includes(chat.id)?prev:[...prev.slice(-7),chat.id]);
   if(chat.id===useApp.getState().activeId)return;
   set({activeId:chat.id,providerId:chat.providerId,model:chat.model});
   setVariants({});
@@ -348,6 +363,7 @@ export default function App(){
   if(live)await window.lumen.chat.stop(live.requestId).catch(()=>{});
   await window.lumen.chats.delete(chat.id);
   const cs=await window.lumen.chats.list();const next=cs[0];
+  setOpenTabs(prev=>prev.filter(id=>id!==chat.id));
   const nextStreams={...useApp.getState().streams};delete nextStreams[chat.id];
   const nextErrors={...useApp.getState().errors};delete nextErrors[chat.id];
   set({chats:cs,activeId:next?.id??null,messages:[],streams:nextStreams,errors:nextErrors});
@@ -435,6 +451,47 @@ export default function App(){
   await window.lumen.chats.bookmarkMessage(msg.id,!msg.bookmarked);
   set({messages:useApp.getState().messages.map(m=>m.id===msg.id?{...m,bookmarked:m.bookmarked?0:1}:m)});
  },[set]);
+
+ // Answer rating (👍/👎): persisted in main, reflected locally at once.
+ const rateMessage=useCallback(async(msg:Message,rating:number)=>{
+  set({messages:useApp.getState().messages.map(m=>m.id===msg.id?{...m,rating}:m)});
+  try{await window.lumen.chats.rateMessage(msg.id,rating);}catch{}
+ },[set]);
+
+ // Zip export: markdown + JSON + attachments, packed by main via Compress-Archive.
+ const exportZip=useCallback(async()=>{
+  const id=useApp.getState().activeId;if(!id)return;
+  try{const p=await window.lumen.chats.exportZip(id);flash(p?'Saved to '+p:'Export cancelled');}
+  catch(e){flash(e instanceof Error?e.message:'Export failed');}
+ },[flash]);
+
+ // Compare mode: replay the conversation on a second provider/model, side by side.
+ const runCompare=useCallback(async()=>{
+  const id=useApp.getState().activeId;if(!id||compareBusy)return;
+  if(!compareModel){flash('Pick a model to compare against');return;}
+  setCompareBusy(true);setCompareAnswers(null);
+  try{setCompareAnswers(await window.lumen.chats.compare(id,compareProvider,compareModel));}
+  catch(e){flash(e instanceof Error?e.message:'Compare failed');setCompareOpen(false);}
+  finally{setCompareBusy(false);}
+ },[compareBusy,compareModel,compareProvider,flash]);
+
+ // Attached documents (RAG): attach via a native picker, remove by id.
+ const attachDoc=useCallback(async()=>{
+  const id=useApp.getState().activeId;if(!id)return;
+  try{
+   const doc=await window.lumen.chats.attachDoc(id);
+   if(doc){setDocs(await window.lumen.chats.docs(id));flash('Attached '+doc.name);}
+  }catch(e){flash(e instanceof Error?e.message:'Could not attach the document');}
+ },[flash]);
+ const removeDoc=useCallback(async(docId:string)=>{
+  try{await window.lumen.chats.removeDoc(docId);const id=useApp.getState().activeId;if(id)setDocs(await window.lumen.chats.docs(id));}catch{}
+ },[]);
+
+ // @file autocomplete in the composer (workspace-relative paths).
+ const fileQuery=useCallback((q:string)=>{
+  const id=useApp.getState().activeId;if(!id)return Promise.resolve([]);
+  return window.lumen.chats.listWorkspaceFiles(id,q).catch(()=>[]);
+ },[]);
 
  // Summarize: main condenses the transcript; the user can start a fresh chat from it.
  const runSummarize=useCallback(async()=>{
@@ -630,6 +687,15 @@ export default function App(){
  const openProvidersTab=useCallback(()=>{setShowSettings(true);setTab('providers');},[]);
  const closeSettings=useCallback(()=>setShowSettings(false),[]);
  const toggleSidebar=useCallback(()=>setShowSidebar(v=>!v),[]);
+ // Tab strip: closing the active tab moves to the neighbour that stays open.
+ const closeTab=useCallback((id:string)=>{
+  const next=openTabs.filter(x=>x!==id);
+  setOpenTabs(next);
+  if(id===useApp.getState().activeId&&next.length){
+   const nc=useApp.getState().chats.find(x=>x.id===next[next.length-1]);
+   if(nc)openChat(nc);
+  }
+ },[openTabs,openChat]);
  const newChatAndFocus=useCallback(()=>{void newChat().then(()=>input.current?.focus());},[newChat]);
  const pickSuggestion=useCallback((t:string)=>{setDraft(t);input.current?.focus();},[]);
 
@@ -677,7 +743,7 @@ export default function App(){
     set({chats:cs,providers:ps,settings:prefs,streams,
      ...(initial?{activeId:initial.id,providerId:initial.providerId,model:initial.model}:ps[0]?{providerId:ps[0].id,model:ps[0].models[0]??''}:{})});
     setFolders(fs2);
-    if(initial)void load(initial.id);
+    if(initial){setOpenTabs([initial.id]);void load(initial.id);}
     void checkHealth();
    })
    .catch(e=>flash(e instanceof Error?e.message:'Could not load your workspace'));
@@ -711,6 +777,51 @@ export default function App(){
  useEffect(()=>window.lumen.chats.onTodos(({chatId,todos:list})=>{
   if(chatId===useApp.getState().activeId)setTodos(list);
  }),[]);
+
+ // ---- batch 6: tool-call cards in the streaming bubble
+ useEffect(()=>window.lumen.chat.onTool((chatId,ev)=>{
+  const s=useApp.getState();const cur=s.streams[chatId];if(!cur)return;
+  const events=[...(cur.toolEvents??[])];
+  // A second event for the same call (running → ok/error) updates it in place.
+  const idx=events.findIndex(e=>e.name===ev.name&&e.hint===ev.hint&&e.status==='running');
+  if(ev.status!=='running'&&idx>=0)events[idx]=ev;else events.push(ev);
+  set({streams:{...s.streams,[chatId]:{...cur,toolEvents:events}}});
+ }),[set]);
+
+ // ---- batch 6: actionable toast — a file change can be rolled back right away
+ useEffect(()=>window.lumen.chats.onFileOp(op=>{
+  if(op.status!=='ok'||!op.snapshot||op.tool==='rollback')return;
+  if(actionToastTimer.current)clearTimeout(actionToastTimer.current);
+  setActionToast({opId:op.id,text:op.tool+': '+(op.path??'')});
+  actionToastTimer.current=setTimeout(()=>setActionToast(null),9000);
+ }),[]);
+
+ // ---- batch 6: attached documents (RAG) for the open chat
+ useEffect(()=>{
+  if(!showDocs||!activeId)return;
+  void window.lumen.chats.docs(activeId).then(setDocs).catch(()=>setDocs([]));
+ },[showDocs,activeId]);
+
+ // ---- batch 6: Ctrl+Tab cycles open tabs, Ctrl+P opens the command palette
+ useEffect(()=>{
+  const onKey=(e:KeyboardEvent)=>{
+   if(e.key==='Tab'&&(e.ctrlKey||e.metaKey)){
+    if(openTabs.length<2)return;
+    e.preventDefault();
+    const cur=useApp.getState().activeId;
+    const i=openTabs.indexOf(cur??'');
+    const next=openTabs[(i+(e.shiftKey?-1:1)+openTabs.length)%openTabs.length];
+    const chat=useApp.getState().chats.find(c=>c.id===next);
+    if(chat&&next!==cur)openChat(chat);
+    return;
+   }
+   if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&e.key.toLowerCase()==='p'){
+    e.preventDefault();setPaletteQuery('');setShowPalette(v=>!v);
+   }
+  };
+  window.addEventListener('keydown',onKey);
+  return()=>window.removeEventListener('keydown',onKey);
+ },[openTabs,openChat]);
 
  // ---- workspace activity log (loaded lazily when the panel opens)
  useEffect(()=>{
@@ -756,6 +867,22 @@ export default function App(){
   return()=>window.removeEventListener('keydown',onKey);
  },[newChatAndFocus,showSettings,toggleSidebar]);
 
+ // Command palette (Ctrl+P): static commands first, then fuzzy chat matches.
+ const paletteItems=(q:string)=>{
+  const cmds=[
+   {id:'cmd:new',icon:<Sparkles size={13}/>,label:'New conversation',hint:settings.hotkeys.newChat,run:()=>void newChat()},
+   {id:'cmd:settings',icon:<Settings size={13}/>,label:'Open settings',hint:settings.hotkeys.openSettings,run:()=>setShowSettings(true)},
+   {id:'cmd:sidebar',icon:<PanelLeftClose size={13}/>,label:'Toggle sidebar',hint:settings.hotkeys.toggleSidebar,run:toggleSidebar},
+   {id:'cmd:focus',icon:<Maximize2 size={13}/>,label:'Toggle focus mode',hint:'Esc',run:()=>setFocusMode(v=>!v)},
+   {id:'cmd:compare',icon:<GitCompareArrows size={13}/>,label:'Compare models…',hint:'',run:()=>setCompareOpen(true)},
+   {id:'cmd:summarize',icon:<Sparkles size={13}/>,label:'Summarize this chat',hint:'',run:()=>void runSummarize()},
+   {id:'cmd:zip',icon:<Archive size={13}/>,label:'Export chat as zip…',hint:'',run:()=>void exportZip()},
+  ].filter(c=>!q||c.label.toLowerCase().includes(q));
+  const chatItems=chats.filter(c=>!q||c.title.toLowerCase().includes(q)).slice(0,8)
+   .map(c=>({id:'chat:'+c.id,icon:<BookOpen size={13}/>,label:c.title,hint:'chat',run:()=>openChat(c)}));
+  return [...cmds,...chatItems].slice(0,12);
+ };
+
  return <div className={'app-shell'+(settings.compactMode?' compact':'')+(focusMode?' focus':'')} data-theme={settings.theme} data-accent={settings.accent}>
   <Titlebar busy={anyBusy}/>
   <div className="layout">
@@ -766,6 +893,14 @@ export default function App(){
      onCreateFolder={createFolder} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder}
      onOpenHit={openChatAt}/>}
    <main className="main-panel">
+    {openTabs.length>0&&!focusMode&&<div className="tab-strip" role="tablist" aria-label="Open conversations">
+     {openTabs.map(id=>{const c=chats.find(x=>x.id===id);if(!c)return null;
+      return <div key={id} role="tab" aria-selected={id===activeId} className={'chat-tab'+(id===activeId?' active':'')}>
+       {!!streams[id]&&<span className="tab-busy" aria-label="Generating"/>}
+       <button className="tab-title" title={c.title} onClick={()=>openChat(c)}>{c.title}</button>
+       <button className="tab-close" aria-label={'Close tab '+c.title} onClick={()=>closeTab(id)}><X size={11}/></button>
+      </div>;})}
+    </div>}
     {persistError&&<div className="persist-error" role="alert">
      <AlertTriangle size={14}/>
      <span>Changes are not being saved to disk: {persistError}. Free up space or close whatever is locking the file, then restart Lumen.</span>
@@ -798,6 +933,8 @@ export default function App(){
       {active&&<>
        {!!todos.length&&<button className={'icon-btn'+(showTodos?' active':'')} aria-label="Task checklist" title="Task checklist (todo_write)" onClick={()=>setShowTodos(v=>!v)}><ListChecks size={16}/></button>}
        {active.workspace&&<button className={'icon-btn'+(showFileOps?' active':'')} aria-label="Workspace activity" title="Workspace activity — files the model read, wrote, or was refused" onClick={()=>setShowFileOps(v=>!v)}><FileClock size={16}/></button>}
+       <button className={'icon-btn'+(showDocs?' active':'')} aria-label="Attached documents" title="Attached documents (RAG) — their relevant excerpts are added to the model's context" onClick={()=>setShowDocs(v=>!v)}><BookOpen size={16}/></button>
+       <button className="icon-btn" aria-label="Compare models" title="Compare: replay this conversation on another model, side by side" onClick={()=>{setCompareAnswers(null);setCompareOpen(true);}}><GitCompareArrows size={16}/></button>
        {messages.length>=4&&<button className="icon-btn" aria-label="Summarize this chat" title="Summarize this chat (start fresh with the summary)" disabled={summarizing} onClick={()=>void runSummarize()}><Sparkles size={16}/></button>}
        <button className="icon-btn" aria-label={active.archived?'Unarchive this chat':'Archive this chat'} title={active.archived?'Unarchive':'Archive (hide without deleting)'} onClick={()=>void toggleArchived(active)}><Archive size={16}/></button>
       </>}
@@ -820,14 +957,24 @@ export default function App(){
        {op.snapshot&&op.status==='ok'&&op.tool!=='rollback'&&<button className="op-rollback" onClick={()=>void rollbackOp(op.id)}>Roll back</button>}
       </li>)}</ul>:<p className="templates-empty">No operations yet</p>}
     </aside>}
+    {/* Batch 6: attached documents (RAG) — relevant excerpts join the system prompt. */}
+    {showDocs&&<aside className="side-panel" aria-label="Attached documents">
+     <header><BookOpen size={13}/> Documents</header>
+     {docs.length?<ul>{docs.map(d=><li key={d.id}>
+       <div><b>{d.name}</b></div>
+       <small>{Math.round(d.chars/100)/10}k chars · {new Date(d.createdAt).toLocaleDateString()}</small>
+       <button className="op-rollback" onClick={()=>void removeDoc(d.id)}>Remove</button>
+      </li>)}</ul>:<p className="templates-empty">No documents yet — attach a text/markdown/PDF file and the model will quote from it.</p>}
+     <div className="settings-actions"><button className="secondary-button" disabled={docs.length>=8} onClick={()=>void attachDoc()}>Attach document…</button></div>
+    </aside>}
     <section className="conversation" ref={conversation} onScroll={onScroll}>
      {messages.length===0&&!stream&&!busy
       ?<Welcome needsSetup={needsSetup} onSetup={openProvidersTab} onPick={pickSuggestion}/>
       :<MessageList messages={messages} busy={busy} stream={stream?.text??''} reasoning={stream?.reasoning??''} error={error}
-        status={stream?.status} highlightId={highlightId}
+        status={stream?.status} highlightId={highlightId} toolEvents={stream?.toolEvents}
         variants={variants} providers={providers} bottomRef={bottom} onCopy={copy} onRegenerate={regenerate}
         onContinue={continueMessage} onDeleteMessage={deleteMessage} onEditMessage={commitEdit} onRetry={regenerate}
-        onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat} onBookmark={toggleBookmark}/>}
+        onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat} onBookmark={toggleBookmark} onRate={rateMessage}/>}
     </section>
     {!atBottom&&(messages.length>0||busy)&&<button className="scroll-bottom" aria-label="Scroll to latest" onClick={scrollToBottom}>↓</button>}
     <Composer ref={input} draft={draft} busy={busy} needsSetup={needsSetup} providers={providers} providerId={providerId} model={model}
@@ -836,9 +983,49 @@ export default function App(){
       templates={settings.templates} onSlash={handleSlash}
       history={history} queued={activeId?queues[activeId]??[]:[]} onClearQueue={clearQueue} onEnhance={enhanceDraft}
       onDraft={setDraft} onSend={send} onStop={stopActive} onOpenSettings={openProvidersTab}
-      onProvider={changeProvider} onModel={selectModel}/>
+      onProvider={changeProvider} onModel={selectModel} fileQuery={active?.workspace||settings.defaultWorkspace?fileQuery:undefined}/>
    </main>
   </div>
+  {/* Compare mode: the last turn replayed on a second provider/model, side by side. */}
+  {compareOpen&&<div className="modal-backdrop" role="dialog" aria-label="Compare models" onClick={()=>setCompareOpen(false)}>
+   <div className="modal compare-modal" onClick={e=>e.stopPropagation()}>
+    <header><h2><GitCompareArrows size={16}/> Compare models</h2><button className="icon-btn" aria-label="Close" onClick={()=>setCompareOpen(false)}><X size={16}/></button></header>
+    <div className="compare-controls">
+     <select value={compareProvider} onChange={e=>{const id=e.target.value as ProviderId;setCompareProvider(id);setCompareModel(providers.find(x=>x.id===id)?.models[0]??'');}} aria-label="Compare provider">
+      {providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+     </select>
+     <select value={compareModel} onChange={e=>setCompareModel(e.target.value)} aria-label="Compare model">
+      <option value="">Choose model</option>
+      {(providers.find(p=>p.id===compareProvider)?.models??[]).map(m=><option key={m} value={m}>{m}</option>)}
+     </select>
+     <button className="btn-primary" disabled={compareBusy||!compareModel||!active} onClick={()=>void runCompare()}>{compareBusy?'Comparing…':'Run compare'}</button>
+    </div>
+    {compareAnswers&&<div className="compare-grid">
+     {compareAnswers.map((a,i)=><div className="compare-cell" key={i}>
+      <header><b>{a.model}</b><small>{a.providerId}{a.completionTokens?' · ↓'+a.completionTokens:''}</small></header>
+      {a.error?<p className="compare-error" role="alert">{a.error}</p>:<div className="markdown" dangerouslySetInnerHTML={{__html:renderMarkdown(a.text||'(no answer)')}}/>}
+     </div>)}
+    </div>}
+   </div>
+  </div>}
+  {/* Command palette (Ctrl+P): commands above, matching conversations below. */}
+  {showPalette&&<div className="modal-backdrop" role="dialog" aria-label="Command palette" onClick={()=>setShowPalette(false)}>
+   <div className="modal palette-modal" onClick={e=>e.stopPropagation()}>
+    <div className="palette-head"><Command size={14}/><input autoFocus value={paletteQuery} placeholder="Type a command or chat name…" aria-label="Command palette"
+     onChange={e=>setPaletteQuery(e.target.value)}
+     onKeyDown={e=>{
+      if(e.key==='Escape'){setShowPalette(false);return;}
+      if(e.key==='Enter'){
+       const q=paletteQuery.trim().toLowerCase();
+       const items=paletteItems(q);
+       if(items[0]){setShowPalette(false);items[0].run();}
+      }
+     }}/></div>
+    <div className="palette-list">{paletteItems(paletteQuery.trim().toLowerCase()).map(it=>
+     <button key={it.id} onClick={()=>{setShowPalette(false);it.run();}}>{it.icon}<span>{it.label}</span>{it.hint&&<small>{it.hint}</small>}</button>)}
+    </div>
+   </div>
+  </div>}
   {/* Summarize modal: the condensed transcript with a one-click fresh start. */}
   {summary&&<div className="modal-backdrop" role="dialog" aria-label="Chat summary" onClick={()=>setSummary(null)}>
    <div className="modal summary-modal" onClick={e=>e.stopPropagation()}>
@@ -853,8 +1040,14 @@ export default function App(){
     onProviderSelect={changeProvider} onModel={selectModel} onPref={pref}
     onSaveProvider={saveProvider} onRemoveProvider={removeProvider} onTestProvider={testProvider}
     onRefreshModels={refreshModels} refreshingModels={refreshingModels}
-    onExport={exportChat} onExportPrepared={exportPrepared} onWipe={wipeData} onOpenDataFolder={openDataFolder}
+    onExport={exportChat} onExportPrepared={exportPrepared} onExportZip={exportZip} onWipe={wipeData} onOpenDataFolder={openDataFolder}
     notice={notice} onNotice={flash}/>}
   {notice&&!showSettings&&<div className="toast" role="status">{notice}</div>}
+  {/* Actionable toast: a workspace file was just changed — one click rolls it back. */}
+  {actionToast&&<div className="toast toast-action" role="status">
+   <span>{actionToast.text}</span>
+   <button onClick={()=>{const id=actionToast.opId;setActionToast(null);void rollbackOp(id);}}>Roll back</button>
+   <button aria-label="Dismiss" onClick={()=>setActionToast(null)}><X size={12}/></button>
+  </div>}
  </div>;
 }

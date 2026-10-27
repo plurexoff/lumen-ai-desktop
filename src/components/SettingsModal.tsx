@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
-import {Archive,BarChart3,Bot,Check,FileDown,FolderOpen,Keyboard,LayoutTemplate,Moon,Monitor,Pencil,Plus,RotateCcw,Save,Shield,Sparkles,Sun,Trash2,X} from 'lucide-react';
-import type {Accent,DayUsage,HotkeyMap,Persona,PromptTemplate,ProviderConfig,ProviderId,UsageRow,UsageSummary} from '../../electron/shared';
+import {Archive,BarChart3,Bot,Check,FileDown,FolderOpen,Keyboard,LayoutTemplate,Moon,Monitor,Pencil,Plus,RotateCcw,Save,Server,Shield,Sparkles,Sun,Trash2,X} from 'lucide-react';
+import type {Accent,DayUsage,HotkeyMap,McpServer,Persona,PromptTemplate,ProviderConfig,ProviderId,UsageRow,UsageSummary} from '../../electron/shared';
 import {ACCENTS,PERSONA_COLORS} from '../../electron/shared';
 import type {Prefs} from '../store';
 import {providerColors} from '../store';
@@ -27,6 +27,7 @@ interface Props{
  refreshingModels:boolean;
  onExport:(format:'md'|'json')=>void;
  onExportPrepared:(format:'html'|'pdf')=>void;
+ onExportZip:()=>void;
  onWipe:()=>void;
  onOpenDataFolder:()=>void;
  notice:string;
@@ -88,7 +89,7 @@ function HotkeyField({label,value,onChange,onInvalid}:{label:string;value:string
  </div>;
 }
 
-const HOTKEY_LABELS:Record<keyof HotkeyMap,string>={newChat:'New conversation',openSettings:'Open settings',toggleSidebar:'Toggle sidebar'};
+const HOTKEY_LABELS:Record<keyof HotkeyMap,string>={newChat:'New conversation',openSettings:'Open settings',toggleSidebar:'Toggle sidebar',quickChat:'Quick chat window'};
 
 // Persona editor draft: ids are assigned on creation, the rest is plain fields.
 // Kept local to the modal; saving writes the whole personas array via onPref.
@@ -132,6 +133,19 @@ function StatsView(){
  </>;
 }
 
+// One-row form to register an MCP server (name + stdio command). Validation of the
+// final list happens in main (clampSettings); here we only require both fields.
+function McpAddRow({servers,onAdd}:{servers:McpServer[];onAdd:(s:McpServer)=>void}){
+ const [name,setName]=useState('');
+ const [command,setCommand]=useState('');
+ const full=servers.length>=5;
+ return <div className="inline-row">
+  <input value={name} onChange={e=>setName(e.target.value)} placeholder="Name (e.g. filesystem)" aria-label="MCP server name" maxLength={60} disabled={full}/>
+  <input value={command} onChange={e=>setCommand(e.target.value)} placeholder="Command (e.g. npx -y @modelcontextprotocol/server-filesystem .)" aria-label="MCP server command" maxLength={300} disabled={full}/>
+  <button className="secondary-button" disabled={full||!name.trim()||!command.trim()} onClick={()=>{onAdd({id:crypto.randomUUID(),name:name.trim(),command:command.trim()});setName('');setCommand('');}}><Plus size={14}/> Add</button>
+ </div>;
+}
+
 function PersonaEditor({persona,providers,onSave,onCancel}:{persona:Persona;providers:ProviderConfig[];onSave:(p:Persona)=>void;onCancel:()=>void}){
  const [draft,setDraft]=useState<Persona>(persona);
  const set=<K extends keyof Persona>(k:K,v:Persona[K])=>setDraft(d=>({...d,[k]:v}));
@@ -164,7 +178,7 @@ function PersonaEditor({persona,providers,onSave,onCancel}:{persona:Persona;prov
 }
 
 export default function SettingsModal(props:Props){
- const {tab,onTab,providers,providerId,model,settings,hasActiveChat,onClose,onProviderSelect,onModel,onPref,onSaveProvider,onRemoveProvider,onTestProvider,onRefreshModels,refreshingModels,onExport,onExportPrepared,onWipe,onOpenDataFolder,notice,onNotice}=props;
+ const {tab,onTab,providers,providerId,model,settings,hasActiveChat,onClose,onProviderSelect,onModel,onPref,onSaveProvider,onRemoveProvider,onTestProvider,onRefreshModels,refreshingModels,onExport,onExportPrepared,onExportZip,onWipe,onOpenDataFolder,notice,onNotice}=props;
  const [apiKey,setApiKey]=useState('');
  const [baseUrl,setBaseUrl]=useState('');
  const [providerName,setProviderName]=useState('');
@@ -366,6 +380,18 @@ export default function SettingsModal(props:Props){
         <button className="primary-button" onClick={()=>setEditingTemplate(blankTemplate())}><Plus size={14}/> New template</button>
        </div>
       </>}
+      <h3><Server size={14}/> MCP servers</h3>
+      <p>External tool servers (Model Context Protocol) launched over stdio — e.g. <code>npx -y @modelcontextprotocol/server-filesystem C:\projects</code>. Their tools become available to every model (shown as mcp:… cards). Max 5.</p>
+      <div className="model-list">
+       {settings.mcpServers.map(s=><div className="persona-row" key={s.id}>
+        <Server size={13}/>
+        <span className="persona-name">{s.name}</span>
+        <small className="persona-active">{s.command}</small>
+        <button title={'Remove '+s.name} aria-label={'Remove '+s.name} onClick={()=>void onPref('mcpServers',settings.mcpServers.filter(x=>x.id!==s.id))}><Trash2 size={13}/></button>
+       </div>)}
+       {!settings.mcpServers.length&&<div className="models-empty">No MCP servers configured.</div>}
+      </div>
+      <McpAddRow servers={settings.mcpServers} onAdd={s=>{void onPref('mcpServers',[...settings.mcpServers,s]);onNotice('MCP server added — its tools are available from the next message');}}/>
     </>:tab==='stats'?<>
      <h3>Statistics</h3><p>Token usage per day across all providers (assistant replies).</p>
      <StatsView/>
@@ -401,8 +427,15 @@ export default function SettingsModal(props:Props){
       <button className="secondary-button" onClick={()=>onExport('json')}>Export JSON</button>
       <button className="secondary-button" onClick={()=>onExportPrepared('html')}><FileDown size={14}/> Export HTML</button>
       <button className="secondary-button" onClick={()=>onExportPrepared('pdf')}><FileDown size={14}/> Export PDF</button>
+      <button className="secondary-button" onClick={onExportZip}><Archive size={14}/> Export zip (md+json+files)</button>
       <button className="secondary-button" onClick={onOpenDataFolder}><FolderOpen size={14}/> Open data folder</button>
      </div>}
+     <h3><RotateCcw size={14}/> Updates</h3>
+     <p>Updates download automatically in the installed app. A private GitHub repo requires a GH_TOKEN environment variable for the check.</p>
+     <div className="settings-actions">
+      <button className="secondary-button" onClick={()=>{void window.lumen.updates.check().then(onNotice);}}>Check for updates</button>
+      <button className="secondary-button" onClick={()=>window.lumen.updates.install()}>Restart &amp; install</button>
+     </div>
      <h3><Save size={14}/> Backup</h3>
      <p>Back up the whole database and attachments, or restore from an earlier backup file. Restoring restarts the app.</p>
      <div className="settings-actions">

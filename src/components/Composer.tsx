@@ -1,5 +1,5 @@
 import {forwardRef,useEffect,useRef,useState} from 'react';
-import {ArrowUp,ChevronDown,Eye,ImagePlus,KeyRound,LayoutTemplate,ListPlus,Mic,MicOff,Shield,TriangleAlert,Wand2,X} from 'lucide-react';
+import {ArrowUp,ChevronDown,Eye,FileText,ImagePlus,KeyRound,LayoutTemplate,ListPlus,Mic,MicOff,Shield,TriangleAlert,Wand2,X} from 'lucide-react';
 import type {Persona,PromptTemplate,ProviderConfig,ProviderId} from '../../electron/shared';
 import {IMAGE_MIMES} from '../../electron/shared';
 import type {PendingImage} from '../store';
@@ -36,6 +36,9 @@ interface Props{
  // Slash commands (/persona X, /model Y, /clear, /template N). Returns true when the
  // draft was consumed as a command.
  onSlash:(raw:string)=>boolean;
+ // @file autocomplete source: workspace-relative paths matching a substring. Absent
+ // when the chat has no workspace — the "@" menu simply never opens then.
+ fileQuery?:(q:string)=>Promise<string[]>;
 }
 
 // Rough draft token estimate (chars/4) plus its cost at the current model's input
@@ -56,7 +59,7 @@ interface SpeechRecognitionLike{
  start():void;stop():void;
 }
 
-export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,busy,needsSetup,providers,providerId,model,images,personas,personaId,templates,history,queued,onAddImages,onRemoveImage,onPersona,onDraft,onSend,onStop,onProvider,onModel,onOpenSettings,onEnhance,onClearQueue,onSlash},ref){
+export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,busy,needsSetup,providers,providerId,model,images,personas,personaId,templates,history,queued,onAddImages,onRemoveImage,onPersona,onDraft,onSend,onStop,onProvider,onModel,onOpenSettings,onEnhance,onClearQueue,onSlash,fileQuery},ref){
  const current=providers.find(p=>p.id===providerId);
  const models=current?.models??[];
  // An IME (CJK input) fires Enter to commit a candidate, not to send the message.
@@ -138,6 +141,32 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
  const [preview,setPreview]=useState(false);
  const previewHtml=preview&&draft.trim()?renderMarkdown(draft):'';
  const counter=estimateDraft(draft,providers,providerId,model);
+ // @file autocomplete: a "@src/ut…" token right before the caret queries the
+ // workspace file list (main applies the same jail rules as the model's tools).
+ const [fileMenu,setFileMenu]=useState<{start:number;items:string[];sel:number}|null>(null);
+ const fileMenuRef=useRef(fileMenu);
+ useEffect(()=>{fileMenuRef.current=fileMenu;},[fileMenu]);
+ const updateFileMenu=(el:HTMLTextAreaElement,value:string)=>{
+  if(!fileQuery){if(fileMenuRef.current)setFileMenu(null);return;}
+  const caret=el.selectionStart;
+  const m=/@([\w./\\-]*)$/.exec(value.slice(0,caret));
+  if(!m){if(fileMenuRef.current)setFileMenu(null);return;}
+  const start=caret-m[0].length;
+  void fileQuery(m[1]).then(items=>{
+   // A newer keystroke may have closed or moved the menu meanwhile.
+   if(fileMenuRef.current?.start!==start&&fileMenuRef.current!==null)return;
+   setFileMenu({start,items,sel:0});
+  }).catch(()=>setFileMenu(null));
+ };
+ const pickFile=(item:string)=>{
+  const fm=fileMenuRef.current;
+  if(!fm)return;
+  const el=(ref&&typeof ref!=='function'?ref.current:null)??null;
+  const caret=el?el.selectionStart:draft.length;
+  onDraft(draft.slice(0,fm.start)+'@'+item+' '+draft.slice(caret));
+  setFileMenu(null);
+  requestAnimationFrame(()=>{if(el){const pos=fm.start+item.length+2;el.setSelectionRange(pos,pos);el.focus();autosize(el);}});
+ };
  return <footer className="composer-area"><div className="composer">
   {needsSetup&&<div className="composer-warning">
    <KeyRound size={13}/><span>No provider is connected yet.</span>
@@ -163,11 +192,23 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
   {showTemplates&&<div className="templates-menu" role="menu">
    {templates.length?templates.map(t=><button key={t.id} role="menuitem" onClick={()=>applyTemplate(t)}><LayoutTemplate size={12}/><span>{t.name}</span></button>):<span className="templates-empty">No templates yet — add them in Settings</span>}
   </div>}
+  {fileMenu&&fileMenu.items.length>0&&<div className="file-menu" role="listbox" aria-label="Workspace files">
+   {fileMenu.items.slice(0,8).map((f,i)=><button key={f} role="option" aria-selected={i===fileMenu.sel} className={i===fileMenu.sel?'active':''}
+    onMouseDown={e=>{e.preventDefault();pickFile(f);}}><FileText size={12}/><span>{f}</span></button>)}
+  </div>}
   <textarea ref={ref} value={draft} rows={1} spellCheck
    onCompositionStart={()=>{composing.current=true;}}
    onCompositionEnd={()=>{composing.current=false;}}
-   onChange={e=>{nav.current=null;onDraft(e.target.value);autosize(e.currentTarget);}}
+   onChange={e=>{nav.current=null;onDraft(e.target.value);autosize(e.currentTarget);updateFileMenu(e.currentTarget,e.target.value);}}
    onKeyDown={e=>{
+    // The @file menu owns navigation/selection keys while it is open.
+    const fm=fileMenuRef.current;
+    if(fm&&fm.items.length){
+     if(e.key==='ArrowDown'){e.preventDefault();setFileMenu({...fm,sel:(fm.sel+1)%Math.min(8,fm.items.length)});return;}
+     if(e.key==='ArrowUp'){e.preventDefault();setFileMenu({...fm,sel:(fm.sel-1+Math.min(8,fm.items.length))%Math.min(8,fm.items.length)});return;}
+     if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();pickFile(fm.items[fm.sel]);return;}
+     if(e.key==='Escape'){e.preventDefault();setFileMenu(null);return;}
+    }
     // Ctrl/Cmd+Enter always sends; plain Enter sends unless composing an IME string.
     if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();sendOrSlash();return;}
     if(e.key==='Enter'&&!e.shiftKey&&!composing.current){e.preventDefault();sendOrSlash();return;}

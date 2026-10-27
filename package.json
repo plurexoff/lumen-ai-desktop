@@ -22,8 +22,11 @@
   },
   "dependencies": {
     "dompurify": "^3.4.17",
+    "electron-updater": "^6.8.11",
     "lucide-react": "^0.468.0",
     "marked": "^15.0.7",
+    "mermaid": "^11.17.2",
+    "pdf-parse": "^1.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sql.js": "^1.13.0",
@@ -59,8 +62,16 @@
       "dist/**",
       "dist-electron/**",
       "node_modules/sql.js/**",
+      "node_modules/pdf-parse/**",
+      "node_modules/electron-updater/**",
       "package.json"
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "plurexoff",
+      "repo": "lumen-ai-desktop",
+      "private": true
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

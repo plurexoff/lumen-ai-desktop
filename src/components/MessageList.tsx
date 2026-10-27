@@ -1,7 +1,7 @@
-import {memo,useState} from 'react';
+import {memo,useEffect,useRef,useState} from 'react';
 import type {MouseEvent,RefObject} from 'react';
-import {Activity,Bookmark,Brain,Check,ChevronDown,Copy,CornerDownLeft,GitFork,Pencil,Quote,RefreshCw,Sparkles,Trash2,Volume2,VolumeX} from 'lucide-react';
-import type {Message,MessageVariant,ProviderConfig} from '../../electron/shared';
+import {Activity,Bookmark,Brain,Check,ChevronDown,Copy,CornerDownLeft,GitFork,Pencil,Quote,RefreshCw,Sparkles,ThumbsDown,ThumbsUp,Trash2,Volume2,VolumeX,Wrench} from 'lucide-react';
+import type {Message,MessageVariant,ProviderConfig,ToolEvent} from '../../electron/shared';
 import {useMarkdownHtml,useThrottledMarkdown} from '../useMarkdown';
 import {formatCost,messageCost} from '../cost';
 
@@ -28,16 +28,52 @@ interface Props{
  onRestoreVariant:(variantId:string)=>void;
  onBranch:(message:Message)=>void;
  onBookmark:(message:Message)=>void;
+ onRate:(message:Message,rating:number)=>void;
+ // Tool-call cards for the in-flight answer (batch 6), shown in the stream bubble.
+ toolEvents?:ToolEvent[];
 }
 
 // Stable empty array so the `variants[id] ?? NO_VARIANTS` fallback does not hand each
 // memoized row a fresh reference every render (which would defeat React.memo).
 const NO_VARIANTS:MessageVariant[]=[];
 
+// Mermaid diagrams: ```mermaid fenced blocks are rendered to SVG after mount.
+// mermaid is imported lazily (it is by far the heaviest dependency); a failed or
+// incomplete diagram stays a plain code block. securityLevel 'strict' sanitizes
+// labels — the diagram source is untrusted model output.
+function MermaidRenderer({root}:{root:HTMLDivElement|null}){
+ useEffect(()=>{
+  if(!root)return;
+  const blocks=Array.from(root.querySelectorAll('pre code.language-mermaid'));
+  if(!blocks.length)return;
+  let cancelled=false;
+  void import('mermaid').then(async({default:mermaid})=>{
+   mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:document.querySelector('.app-shell')?.getAttribute('data-theme')==='light'?'default':'dark'});
+   for(const block of blocks){
+    const holder=block.closest('.code-block');
+    if(!holder||cancelled)return;
+    try{
+     const {svg}=await mermaid.render('mmd-'+Math.random().toString(36).slice(2),block.textContent??'');
+     if(cancelled)return;
+     const div=document.createElement('div');
+     div.className='mermaid-diagram';
+     div.innerHTML=svg;
+     holder.replaceWith(div);
+    }catch{/* not a valid (complete) diagram — keep the code block */}
+   }
+  }).catch(()=>{});
+  return()=>{cancelled=true;};
+ },[root]);
+ return null;
+}
+
 // Rendered markdown plus click delegation for the per-block Copy buttons that
 // renderMarkdown injects into fenced code blocks. The code text is read from the
 // DOM (never an attribute), and the button flips to "Copied" as feedback.
 function Markdown({html}:{html:string}){
+ const ref=useRef<HTMLDivElement>(null);
+ const [root,setRoot]=useState<HTMLDivElement|null>(null);
+ useEffect(()=>{setRoot(ref.current);},[html]);
  const onClick=(e:MouseEvent)=>{
   const btn=(e.target as HTMLElement).closest('.code-copy');
   if(!btn)return;
@@ -48,7 +84,21 @@ function Markdown({html}:{html:string}){
    setTimeout(()=>{btn.textContent='Copy';},1200);
   });
  };
- return <div className="markdown" onClick={onClick} dangerouslySetInnerHTML={{__html:html}}/>;
+ return <><div className="markdown" ref={ref} onClick={onClick} dangerouslySetInnerHTML={{__html:html}}/><MermaidRenderer root={root}/></>;
+}
+
+// Cards for the tool calls of the answer currently streaming (batch 6): name, the
+// argument hint and the outcome, so tool work is visible without opening Thinking.
+function ToolCards({events}:{events:ToolEvent[]}){
+ if(!events.length)return null;
+ return <div className="tool-cards" aria-label="Tool activity">
+  {events.map((ev,i)=><div key={i} className={'tool-card '+ev.status}>
+   <Wrench size={12}/>
+   <span className="tool-name">{ev.name.replace(/^mcp__[^_]+__/,'mcp: ')}</span>
+   {ev.hint&&<code className="tool-hint">{ev.hint}</code>}
+   <span className="tool-status">{ev.status==='running'?'…':ev.status==='ok'?'✓':ev.status==='declined'?'declined':'failed'}</span>
+  </div>)}
+ </div>;
 }
 
 // Day separators inside the feed ("Today" / "Yesterday" / date) — long chats are
@@ -105,12 +155,12 @@ function speak(text:string,onEnd:()=>void):()=>void{
  return ()=>speechSynthesis.cancel();
 }
 
-const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,providers,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch,onBookmark,onImageClick}:{
+const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,providers,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch,onBookmark,onRate,onImageClick}:{
  m:Message;isLast:boolean;busy:boolean;highlighted?:boolean;variants:MessageVariant[];providers:ProviderConfig[];
  onCopy:(t:string)=>void;onRegenerate:()=>void;onContinue:(id:string)=>void;
  onDeleteMessage:(m:Message)=>void;onEditMessage:(m:Message,text:string)=>void;
  onLoadVariants:(id:string)=>void;onRestoreVariant:(id:string)=>void;
- onBranch:(m:Message)=>void;onBookmark:(m:Message)=>void;onImageClick:(src:string)=>void;
+ onBranch:(m:Message)=>void;onBookmark:(m:Message)=>void;onRate:(m:Message,rating:number)=>void;onImageClick:(src:string)=>void;
 }){
  const html=useMarkdownHtml(m.content);
  const [editing,setEditing]=useState(false);
@@ -176,6 +226,11 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,pr
     {m.role==='assistant'&&isLast&&<button className="copy-btn" disabled={busy} onClick={onRegenerate} aria-label="Regenerate response"><RefreshCw size={12}/> Regenerate</button>}
     {m.role==='assistant'&&!!m.variantCount&&<button className="copy-btn" onClick={()=>{setShowVariants(v=>!v);onLoadVariants(m.id);}} aria-label="Previous answers">History ({m.variantCount})</button>}
     {m.role==='assistant'&&<button className="copy-btn" onClick={()=>onDeleteMessage(m)} aria-label="Delete message"><Trash2 size={12}/></button>}
+    {/* Answer rating: 👍/👎 stored on the message; clicking the active one clears it. */}
+    {m.role==='assistant'&&!m.id.startsWith('pending-')&&<>
+     <button className={'copy-btn'+(m.rating===1?' rated-up':'')} onClick={()=>onRate(m,m.rating===1?0:1)} aria-label="Good answer" title="Good answer"><ThumbsUp size={12}/></button>
+     <button className={'copy-btn'+(m.rating===-1?' rated-down':'')} onClick={()=>onRate(m,m.rating===-1?0:-1)} aria-label="Bad answer" title="Bad answer"><ThumbsDown size={12}/></button>
+    </>}
     {/* Pending bubbles (id "pending-…") exist only in the renderer — branching from one
         would fail in main, which knows nothing about the row yet. */}
     {!busy&&!m.id.startsWith('pending-')&&<button className="copy-btn" onClick={()=>onBranch(m)} aria-label="Branch conversation from here" title="Branch conversation from here"><GitFork size={12}/> Branch</button>}
@@ -185,7 +240,7 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,pr
  </article>;
 });
 
-export default function MessageList({messages,busy,stream,reasoning,error,status,highlightId,variants,providers,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch,onBookmark}:Props){
+export default function MessageList({messages,busy,stream,reasoning,error,status,highlightId,variants,providers,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch,onBookmark,onRate,toolEvents}:Props){
  const last=messages[messages.length-1];
  const canRetry=!!last&&last.role==='assistant'&&!busy;
  // The streaming bubble re-parses on a throttle, not per chunk (idea #17).
@@ -206,7 +261,7 @@ export default function MessageList({messages,busy,stream,reasoning,error,status
     <MessageRow m={m} isLast={i===messages.length-1} busy={busy} highlighted={m.id===highlightId} variants={variants[m.id]??NO_VARIANTS} providers={providers}
      onCopy={onCopy} onRegenerate={onRegenerate} onContinue={onContinue}
      onDeleteMessage={onDeleteMessage} onEditMessage={onEditMessage}
-     onLoadVariants={onLoadVariants} onRestoreVariant={onRestoreVariant} onBranch={onBranch} onBookmark={onBookmark} onImageClick={setLightbox}/>
+     onLoadVariants={onLoadVariants} onRestoreVariant={onRestoreVariant} onBranch={onBranch} onBookmark={onBookmark} onRate={onRate} onImageClick={setLightbox}/>
    </div>;
   })}
   {(busy||stream||reasoning)&&<article className="message assistant" aria-live="polite" aria-busy="true">
@@ -215,6 +270,7 @@ export default function MessageList({messages,busy,stream,reasoning,error,status
     <div className="message-heading"><b>Lumen</b><small>{status??(stream?'Responding':'Thinking')}</small></div>
     {/* Indeterminate progress while generating — no total is knowable mid-stream. */}
     <div className="gen-progress" aria-hidden="true"><i/></div>
+    {!!toolEvents?.length&&<ToolCards events={toolEvents}/>}
     <Reasoning key={stream?'answering':'thinking'} text={reasoning} collapsedByDefault={!!stream} live/>
     {stream
      ?<Markdown html={streamHtml}/>

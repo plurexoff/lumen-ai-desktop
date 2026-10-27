@@ -53,6 +53,8 @@ export const TOOL_DEFS: ToolDef[] = [
  { name: 'memory_save', description: 'Overwrite the project memory with everything worth remembering about this project. Requires approval.', schema: { type: 'object', properties: { content: { type: 'string' } }, required: ['content'] } },
  { name: 'todo_write', description: 'Replace the task checklist for this chat (array of {text, done}). Use it to plan and show progress on multi-step work.', schema: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, done: { type: 'boolean' } }, required: ['text'] } } }, required: ['todos'] } },
  { name: 'web_fetch', description: 'Fetch a web page and return its text (docs, issues). The user approves each new domain.', schema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
+ { name: 'sql_query', description: 'Run a read-only SELECT query against a .sqlite/.db file or a .csv file in the workspace (data analysis). Returns rows as a table (max 50 rows).', schema: { type: 'object', properties: { path: REL_PATH, query: { type: 'string', description: 'A single SELECT statement; for CSV files use table name "data"' } }, required: ['path', 'query'] } },
+ { name: 'spawn_subagent', description: 'Delegate a self-contained research subtask (e.g. "analyze the tests folder and report what is covered") to a sub-agent with READ-ONLY workspace access. Returns its findings; your own context stays clean.', schema: { type: 'object', properties: { task: { type: 'string', description: 'What the sub-agent should find out' } }, required: ['task'] } },
 ];
 
 export const WORKSPACE_PROMPT = 'You have tools to work with files in the user\'s workspace folder (the working directory). Rules: use relative paths only; the project tree is attached below — read a file before rewriting it; prefer edit_file for targeted changes and write_file for new/fully-rewritten files; use todo_write to plan multi-step work and update it as you progress; memory_read/memory_save is your long-term memory about this project — check it when context matters. Writes, deletes, moves and commands require the user\'s approval and may be declined — respect that. Keep answers concise and mention which files you read or changed.';
@@ -582,7 +584,77 @@ export async function webFetch(url: string, approve: ApproveFn): Promise<string>
  } finally { clearTimeout(timer); }
 }
 
-// ---- todos -------------------------------------------------------------------------
+// ---- sql_query (read-only data analysis) ------------------------------------------
+// SQLite files are opened with sql.js (fresh instance per call — these are the
+// USER's data files, not the app database); CSV gets a tiny in-memory table.
+
+async function sqlJs() {
+ const init = (await import('sql.js')).default;
+ return init({ locateFile: (file: string) => path.join(__dirname, '../node_modules/sql.js/dist', file) });
+}
+
+function parseCsv(text: string): string[][] {
+ const rows: string[][] = [];
+ let cur: string[] = [], field = '', inQ = false;
+ for (let i = 0; i < text.length; i++) {
+  const c = text[i];
+  if (inQ) {
+   if (text[i] === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+   else field += text[i];
+  } else if (c === '"') inQ = true;
+  else if (c === ',') { cur.push(field); field = ''; }
+  else if (c === '\n' || c === '\r') {
+   if (c === '\r' && text[i + 1] === '\n') i++;
+   cur.push(field); field = '';
+   if (cur.length > 1 || cur[0] !== '') rows.push(cur);
+   cur = [];
+  } else field += c;
+ }
+ if (field !== '' || cur.length) { cur.push(field); rows.push(cur); }
+ return rows;
+}
+
+export async function sqlQuery(root: string, rel: string, query: string): Promise<string> {
+ if (typeof query !== 'string' || !/^\s*select\b/i.test(query) || query.length > 2000) throw new Error('Only a single SELECT query is allowed');
+ if (/;\s*\S/.test(query)) throw new Error('Only a single statement is allowed');
+ const abs = resolveInWorkspace(root, rel);
+ if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new Error('No such file');
+ const ext = path.extname(abs).toLowerCase();
+ const SQL = await sqlJs();
+ const db = new SQL.Database();
+ try {
+  if (ext === '.csv') {
+   const rows = parseCsv(fs.readFileSync(abs, 'utf8').slice(0, 4 * 1024 * 1024));
+   if (rows.length < 2) throw new Error('CSV has no data rows');
+   const cols = rows[0].map((c, i) => (c.trim().replace(/\W+/g, '_') || 'col_' + i));
+   db.run('CREATE TABLE data(' + cols.map(c => `"${c}" TEXT`).join(',') + ')');
+   const stmt = db.prepare('INSERT INTO data VALUES(' + cols.map(() => '?').join(',') + ')');
+   for (const r of rows.slice(1, 50001)) { while (r.length < cols.length) r.push(''); stmt.run(r.slice(0, cols.length)); }
+   stmt.free();
+  } else if (ext === '.sqlite' || ext === '.db' || ext === '.sqlite3') {
+   db.close();
+   const bytes = fs.readFileSync(abs);
+   if (bytes.length > 100 * 1024 * 1024) throw new Error('Database file too large (max 100 MB)');
+   const real = new SQL.Database(bytes);
+   try { return runSelect(real, query); } finally { real.close(); }
+  } else throw new Error('Only .csv / .sqlite / .db files are supported');
+  return runSelect(db, query);
+ } finally {
+  try { db.close(); } catch { /* already closed */ }
+ }
+}
+
+function runSelect(db: import('sql.js').Database, query: string): string {
+ const res = db.exec(query);
+ if (!res.length) return '(no rows)';
+ const { columns, values } = res[0];
+ const shown = values.slice(0, 50);
+ const widths = columns.map((c, i) => Math.min(40, Math.max(String(c).length, ...shown.map(r => String(r[i] ?? '').length))));
+ const line = (cells: unknown[]) => cells.map((c, i) => String(c ?? 'NULL').slice(0, 40).padEnd(widths[i])).join(' │ ');
+ const out = [line(columns), widths.map(w => '─'.repeat(w)).join('─┼─'), ...shown.map(line)];
+ if (values.length > 50) out.push(`… (${values.length - 50} more rows)`);
+ return out.join('\n');
+}
 // Validated here, persisted by main (chats.todos) and mirrored to the renderer panel.
 
 export interface TodoItem { text: string; done: boolean }
@@ -652,6 +724,8 @@ export async function runToolCall(root: string, call: ToolCallRequest, approve: 
     return done(JSON.stringify(normalizeTodos(args.todos)));
    }
    case 'web_fetch': return done(await webFetch(String(args.url ?? ''), approve));
+   case 'sql_query': return done(await sqlQuery(root, String(args.path ?? ''), String(args.query ?? '')));
+   case 'spawn_subagent': return done('spawn_subagent is handled by the app core, not the dispatcher', true);
    default: return done('Unknown tool ' + call.name, true);
   }
  } catch (e) {
