@@ -12,6 +12,7 @@ import Composer from './components/Composer';
 import SettingsModal from './components/SettingsModal';
 import {renderMarkdown} from './markdown';
 import {useT} from './i18n';
+import {isMobile} from './platform/detect';
 
 type Tab='providers'|'appearance'|'agents'|'data'|'stats';
 // Request params are taken from preferences; `theme` is deliberately not forwarded.
@@ -52,7 +53,8 @@ export default function App(){
  const set=useApp(s=>s.set);
  const t=useT();
  const [showSettings,setShowSettings]=useState(false);
- const [showSidebar,setShowSidebar]=useState(true);
+ // On Android the sidebar is an overlay drawer and starts closed.
+ const [showSidebar,setShowSidebar]=useState(()=>!isMobile);
  const [tab,setTab]=useState<Tab>('providers');
  const [draft,setDraft]=useState('');
  const [images,setImagesState]=useState<PendingImage[]>([]);
@@ -356,6 +358,7 @@ export default function App(){
  },[set]);
 
  const openChat=useCallback((chat:Chat)=>{
+  if(isMobile)setShowSidebar(false);
   setUnread(prev=>{if(!prev.has(chat.id))return prev;const n=new Set(prev);n.delete(chat.id);return n;});
   setOpenTabs(prev=>prev.includes(chat.id)?prev:[...prev.slice(-7),chat.id]);
   if(chat.id===useApp.getState().activeId)return;
@@ -732,8 +735,25 @@ export default function App(){
    if(nc)openChat(nc);
   }
  },[openTabs,openChat]);
- const newChatAndFocus=useCallback(()=>{void newChat().then(()=>input.current?.focus());},[newChat]);
+ const newChatAndFocus=useCallback(()=>{if(isMobile)setShowSidebar(false);void newChat().then(()=>input.current?.focus());},[newChat]);
  const pickSuggestion=useCallback((t:string)=>{setDraft(t);input.current?.focus();},[]);
+
+ // Android hardware back: close the settings modal / drawer / focus mode first;
+ // only when nothing is open does the app go to the background.
+ const uiRef=useRef({settings:false,sidebar:false,focus:false});
+ useEffect(()=>{uiRef.current={settings:showSettings,sidebar:showSidebar,focus:focusMode};},[showSettings,showSidebar,focusMode]);
+ useEffect(()=>{
+  if(!isMobile)return;
+  let sub:{remove:()=>Promise<void>}|undefined;
+  void import('@capacitor/app').then(({App:CapApp})=>
+   CapApp.addListener('backButton',()=>{
+    if(uiRef.current.settings)setShowSettings(false);
+    else if(uiRef.current.sidebar)setShowSidebar(false);
+    else if(uiRef.current.focus)setFocusMode(false);
+    else void CapApp.minimizeApp();
+   })).then(h=>{sub=h;});
+  return ()=>{void sub?.remove();};
+ },[]);
 
  // ---- stream batching: main sends a chunk per token; accumulate and flush on rAF
  useEffect(()=>{
@@ -925,7 +945,7 @@ export default function App(){
  };
 
  return <div className={'app-shell'+(settings.density==='compact'||settings.compactMode?' compact':'')+(settings.density==='comfortable'?' comfy':'')+(focusMode?' focus':'')+(profile.mica?' mica':'')} data-theme={settings.theme} data-accent={settings.accent} data-preset={settings.themePreset}>
-  <Titlebar busy={anyBusy}/>
+  {!isMobile&&<Titlebar busy={anyBusy}/>}
   <div className="layout">
    {showSidebar&&!focusMode&&<Sidebar chats={chats} activeId={activeId} providers={providers} folders={folders} busyIds={busyIds} needsSetup={needsSetup} unread={unread}
      newChatHotkey={settings.hotkeys.newChat}
@@ -933,6 +953,7 @@ export default function App(){
      onTogglePin={togglePin} onMoveFolder={moveToFolder} onToggleArchived={toggleArchived} onSetTags={setTags}
      onCreateFolder={createFolder} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder}
      onOpenHit={openChatAt}/>}
+   {isMobile&&showSidebar&&!focusMode&&<div className="drawer-backdrop" onClick={()=>setShowSidebar(false)}/>}
    <main className="main-panel">
     {openTabs.length>0&&!focusMode&&<div className="tab-strip" role="tablist" aria-label={t('app.openConversations')}>
      {openTabs.map(id=>{const c=chats.find(x=>x.id===id);if(!c)return null;
@@ -980,7 +1001,7 @@ export default function App(){
        <button className="icon-btn" aria-label={active.archived?t('app.unarchiveChat'):t('app.archiveChat')} title={active.archived?t('app.unarchive'):t('app.archiveTitle')} onClick={()=>void toggleArchived(active)}><Archive size={16}/></button>
       </>}
       <button className={'icon-btn'+(focusMode?' active':'')} aria-label={t('app.focusMode')} title={t('app.focusModeTitle')} onClick={()=>setFocusMode(v=>!v)}>{focusMode?<Minimize2 size={16}/>:<Maximize2 size={16}/>}</button>
-      <button className={'icon-btn'+(alwaysOnTop?' active':'')} aria-label={t('app.alwaysOnTop')} title={t('app.alwaysOnTop')} onClick={toggleAlwaysOnTop}><Pin size={16}/></button>
+      {!isMobile&&<button className={'icon-btn'+(alwaysOnTop?' active':'')} aria-label={t('app.alwaysOnTop')} title={t('app.alwaysOnTop')} onClick={toggleAlwaysOnTop}><Pin size={16}/></button>}
       <span className="private-label"><Shield size={13}/>{t('app.privateByDesign')}</span>
       <button className="icon-btn" aria-label={t('app.settingsLabel')} onClick={openProvidersTab}><Settings size={16}/></button>
      </div>

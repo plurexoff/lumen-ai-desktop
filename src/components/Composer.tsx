@@ -8,6 +8,7 @@ import {renderMarkdown} from '../markdown';
 import {useCountUp} from '../useCountUp';
 import {formatCost} from '../cost';
 import {t,useT} from '../i18n';
+import {isMobile} from '../platform/detect';
 
 interface Props{
  draft:string;
@@ -282,7 +283,7 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
     <ChevronDown size={13} aria-hidden="true"/>
    </div>
    <div className="send-area">
-    <button className="attach-btn" aria-label={t('composer.attachImages')} title={t('composer.attachImagesHint')} onClick={()=>fileInput.current?.click()}><ImagePlus size={15}/></button>
+    {!isMobile&&<button className="attach-btn" aria-label={t('composer.attachImages')} title={t('composer.attachImagesHint')} onClick={()=>fileInput.current?.click()}><ImagePlus size={15}/></button>}
     <button className={'attach-btn enhance-btn'+(enhancing?' spinning':'')} aria-label={t('composer.enhance')} title={t('composer.enhanceHint')} disabled={!draft.trim()||busy||enhancing} onClick={enhance}><Wand2 size={15}/></button>
     <button className={'attach-btn'+(showTemplates?' active':'')} aria-label={t('composer.templates')} title={t('composer.templatesHint')} onClick={()=>setShowTemplates(v=>!v)}><LayoutTemplate size={15}/></button>
     <button className={'attach-btn'+(listening?' active recording':'')} aria-label={listening?t('composer.stopVoice'):t('composer.voiceInput')} title={listening?t('composer.stopVoice'):t('composer.voiceInputHint')} onClick={toggleVoice}>{listening?<MicOff size={15}/>:<Mic size={15}/>}</button>

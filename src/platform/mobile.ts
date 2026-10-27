@@ -1,9 +1,10 @@
 // Android platform layer: a window.lumen-compatible implementation backed by
 // sql.js (chats/messages/providers), Capacitor Preferences (API keys) and
-// CapacitorHttp (provider calls, non-streaming — the plugin buffers responses,
+// CapacitorHttp (provider calls, non-streaming вЂ” the plugin buffers responses,
 // so the UI gets one big chunk instead of a token stream on mobile).
 // Desktop-only features (workspace tools, MCP, quick window, updater) are stubs.
 import { CapacitorHttp } from '@capacitor/core';
+import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { Preferences } from '@capacitor/preferences';
 import type {
  AppProfile, Chat, ChatChunk, ChatDoc, ChatRequest, CompareAnswer, DataHealth, DayUsage, DesktopAPI,
@@ -108,6 +109,12 @@ export function createMobileApi(): DesktopAPI {
   active.set(r.chatId, r.requestId);
   try {
    const p = await resolveProvider(r.providerId);
+   // Edit-and-resend: drop the edited message and everything after it, so the
+   // replacement prompt does not duplicate the tail of the conversation.
+   if (r.truncateFromMessageId) {
+    const cut = oneRow<MsgRow>(d, 'SELECT created_at FROM messages WHERE id=?', [r.truncateFromMessageId]);
+    if (cut) d.run('DELETE FROM messages WHERE chat_id=? AND created_at>=?', [r.chatId, cut.created_at]);
+   }
    if (mode === 'send' && !r.skipUserPersist) {
     d.run('INSERT INTO messages(id,chat_id,role,content,created_at) VALUES(?,?,?,?,?)', [id(), r.chatId, 'user', r.content, Date.now()]);
    }
@@ -172,7 +179,7 @@ export function createMobileApi(): DesktopAPI {
  const api: DesktopAPI = {
   window: { minimize() {}, toggleMaximize() {}, close() {}, setAlwaysOnTop() {} },
   app: {
-   async version() { return '1.1.0-android'; },
+   async version() { return '1.1.1-android'; },
    async pickFolder() { return null; },
    async profile(): Promise<AppProfile> { return { mica: false, username: '' }; },
   },
@@ -236,8 +243,16 @@ export function createMobileApi(): DesktopAPI {
     const chat = oneRow<ChatRow>(d, 'SELECT * FROM chats WHERE id=?', [cid]);
     if (!chat) return null;
     const msgs = rows<MsgRow>(d, 'SELECT * FROM messages WHERE chat_id=? ORDER BY created_at', [cid]);
-    if (format === 'json') return JSON.stringify({ chat: chatFromRow(chat), messages: msgs.map(msgFromRow) }, null, 2);
-    return ['# ' + chat.title, '', ...msgs.map(m => `**${m.role === 'user' ? 'You' : 'Lumen'}** · ${new Date(m.created_at).toLocaleString()}\n\n${m.content}`)].join('\n\n');
+    const content = format === 'json'
+     ? JSON.stringify({ chat: chatFromRow(chat), messages: msgs.map(msgFromRow) }, null, 2)
+     : ['# ' + chat.title, '', ...msgs.map(m => `**${m.role === 'user' ? 'You' : 'Lumen'}** В· ${new Date(m.created_at).toLocaleString()}\n\n${m.content}`)].join('\n\n');
+    // There is no save dialog on Android: write to the app cache and hand the UI
+    // a real path (the toast shows it; the file is shareable from there).
+    const safe = chat.title.replace(/[^\p{L}\p{N} _-]+/gu, '').trim().slice(0, 40) || 'chat';
+    const name = `lumen-${safe}-${Date.now()}.${format}`;
+    await Filesystem.writeFile({ path: name, data: content, directory: Directory.Cache, encoding: Encoding.UTF8 });
+    const uri = await Filesystem.getUri({ path: name, directory: Directory.Cache });
+    return uri.uri;
    },
    async exportPrepared() { return null; },
    async exportZip() { return null; },

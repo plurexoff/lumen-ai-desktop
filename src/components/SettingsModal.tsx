@@ -8,6 +8,7 @@ import type {Prefs} from '../store';
 import {providerColors} from '../store';
 import {formatCost,messageCost} from '../cost';
 import {useT} from '../i18n';
+import {isMobile} from '../platform/detect';
 
 type Tab='providers'|'appearance'|'agents'|'data'|'stats';
 
@@ -367,14 +368,14 @@ export default function SettingsModal(props:Props){
        <button key={d} className={settings.density===d?'active':''} onClick={()=>void onPref('density',d)} aria-pressed={settings.density===d}>{d[0].toUpperCase()+d.slice(1)}</button>)}
       </div>
      </Field>
-     <Field label={t('settings.defaultWorkspace')}>
+     {!isMobile&&<Field label={t('settings.defaultWorkspace')}>
       <div className="inline-row">
        <input value={settings.defaultWorkspace} readOnly placeholder={t('settings.defaultWorkspacePh')} aria-label={t('settings.defaultWorkspace')}/>
        <button className="secondary-button" onClick={()=>{void window.lumen.app.pickFolder(t('settings.pickWorkspace')).then(p=>{if(p)void onPref('defaultWorkspace',p);});}}>{t('settings.browse')}</button>
        {settings.defaultWorkspace&&<button className="secondary-button" onClick={()=>void onPref('defaultWorkspace','')}>{t('settings.clear')}</button>}
       </div>
       <p className="field-hint">{t('settings.workspaceHint')}</p>
-     </Field>
+     </Field>}
      <Field label={t('settings.customCss')}>
       <div className="inline-row">
        <input value={settings.customCss?t('settings.cssCharsLoaded',{n:settings.customCss.length}):''} readOnly placeholder={t('settings.noCustomCss')} aria-label={t('settings.customCssAria')}/>
@@ -387,15 +388,18 @@ export default function SettingsModal(props:Props){
       </div>
       <p className="field-hint">{t('settings.customCssHint')}</p>
      </Field>
-     <h3><Monitor size={14}/> {t('settings.systemTitle')}</h3>
-     <ToggleRow title={t('settings.trayTitle')} hint={t('settings.trayHint')} checked={settings.minimizeToTray} onChange={v=>void onPref('minimizeToTray',v)}/>
-     <ToggleRow title={t('settings.autoStartTitle')} hint={t('settings.autoStartHint')} checked={settings.autoStart} onChange={v=>void onPref('autoStart',v)}/>
-     <ToggleRow title={t('settings.notificationsTitle')} hint={t('settings.notificationsHint')} checked={settings.notifications} onChange={v=>void onPref('notifications',v)}/>
-     <h3><Keyboard size={14}/> {t('settings.hotkeysTitle')}</h3>
-     <p>{t('settings.hotkeysIntro')}</p>
-     {(Object.keys(HOTKEY_LABELS) as Array<keyof HotkeyMap>).map(k=>
-      <HotkeyField key={k} label={t(HOTKEY_LABELS[k])} value={settings.hotkeys[k]}
-       onChange={v=>void onPref('hotkeys',{...settings.hotkeys,[k]:v})} onInvalid={onNotice}/>)}
+     {/* Tray/autostart/notifications/hotkeys are Windows-desktop concepts. */}
+     {!isMobile&&<>
+      <h3><Monitor size={14}/> {t('settings.systemTitle')}</h3>
+      <ToggleRow title={t('settings.trayTitle')} hint={t('settings.trayHint')} checked={settings.minimizeToTray} onChange={v=>void onPref('minimizeToTray',v)}/>
+      <ToggleRow title={t('settings.autoStartTitle')} hint={t('settings.autoStartHint')} checked={settings.autoStart} onChange={v=>void onPref('autoStart',v)}/>
+      <ToggleRow title={t('settings.notificationsTitle')} hint={t('settings.notificationsHint')} checked={settings.notifications} onChange={v=>void onPref('notifications',v)}/>
+      <h3><Keyboard size={14}/> {t('settings.hotkeysTitle')}</h3>
+      <p>{t('settings.hotkeysIntro')}</p>
+      {(Object.keys(HOTKEY_LABELS) as Array<keyof HotkeyMap>).map(k=>
+       <HotkeyField key={k} label={t(HOTKEY_LABELS[k])} value={settings.hotkeys[k]}
+        onChange={v=>void onPref('hotkeys',{...settings.hotkeys,[k]:v})} onInvalid={onNotice}/>)}
+     </>}
     </>:tab==='agents'?<>
      <h3>{t('settings.personasTitle')}</h3><p>{t('settings.personasIntro')}</p>
      {editingPersona
@@ -490,23 +494,27 @@ export default function SettingsModal(props:Props){
      {hasActiveChat&&<div className="settings-actions">
       <button className="secondary-button" onClick={()=>onExport('md')}>{t('settings.exportMd')}</button>
       <button className="secondary-button" onClick={()=>onExport('json')}>{t('settings.exportJson')}</button>
-      <button className="secondary-button" onClick={()=>onExportPrepared('html')}><FileDown size={14}/> {t('settings.exportHtml')}</button>
-      <button className="secondary-button" onClick={()=>onExportPrepared('pdf')}><FileDown size={14}/> {t('settings.exportPdf')}</button>
-      <button className="secondary-button" onClick={onExportZip}><Archive size={14}/> {t('settings.exportZip')}</button>
-      <button className="secondary-button" onClick={onOpenDataFolder}><FolderOpen size={14}/> {t('settings.openDataFolder')}</button>
+      {!isMobile&&<>
+       <button className="secondary-button" onClick={()=>onExportPrepared('html')}><FileDown size={14}/> {t('settings.exportHtml')}</button>
+       <button className="secondary-button" onClick={()=>onExportPrepared('pdf')}><FileDown size={14}/> {t('settings.exportPdf')}</button>
+       <button className="secondary-button" onClick={onExportZip}><Archive size={14}/> {t('settings.exportZip')}</button>
+       <button className="secondary-button" onClick={onOpenDataFolder}><FolderOpen size={14}/> {t('settings.openDataFolder')}</button>
+      </>}
      </div>}
      <h3><RotateCcw size={14}/> {t('settings.updatesTitle')}</h3>
      <p>{t('settings.updatesIntro')}</p>
      <div className="settings-actions">
       <button className="secondary-button" onClick={()=>{void window.lumen.updates.check().then(onNotice);}}>{t('settings.checkUpdates')}</button>
-      <button className="secondary-button" onClick={()=>window.lumen.updates.install()}>{t('settings.restartInstall')}</button>
+      {!isMobile&&<button className="secondary-button" onClick={()=>window.lumen.updates.install()}>{t('settings.restartInstall')}</button>}
      </div>
-     <h3><Save size={14}/> {t('settings.backupTitle')}</h3>
-     <p>{t('settings.backupIntro')}</p>
-     <div className="settings-actions">
-      <button className="secondary-button" onClick={()=>{void window.lumen.data.backup().then(p=>onNotice(p?t('settings.backupSavedTo',{path:p}):t('settings.backupCancelled'))).catch(e=>onNotice(e instanceof Error?e.message:t('settings.backupFailed')));}}><Save size={14}/> {t('settings.backupNow')}</button>
-      <button className="secondary-button" onClick={()=>{void window.lumen.data.restore().catch(e=>onNotice(e instanceof Error?e.message:t('settings.restoreFailed')));}}><RotateCcw size={14}/> {t('settings.restoreBackup')}</button>
-     </div>
+     {!isMobile&&<>
+      <h3><Save size={14}/> {t('settings.backupTitle')}</h3>
+      <p>{t('settings.backupIntro')}</p>
+      <div className="settings-actions">
+       <button className="secondary-button" onClick={()=>{void window.lumen.data.backup().then(p=>onNotice(p?t('settings.backupSavedTo',{path:p}):t('settings.backupCancelled'))).catch(e=>onNotice(e instanceof Error?e.message:t('settings.backupFailed')));}}><Save size={14}/> {t('settings.backupNow')}</button>
+       <button className="secondary-button" onClick={()=>{void window.lumen.data.restore().catch(e=>onNotice(e instanceof Error?e.message:t('settings.restoreFailed')));}}><RotateCcw size={14}/> {t('settings.restoreBackup')}</button>
+      </div>
+     </>}
      {confirmWipe
       ?<div className="confirm-inline" role="alertdialog" aria-label={t('settings.confirmWipeAria')}>
         <p>{t('settings.confirmWipeText')}</p>

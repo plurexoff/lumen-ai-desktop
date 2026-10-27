@@ -24,6 +24,16 @@ npm run dist:win    # = build + electron-builder --win nsis
 ```
 The NSIS installer is written to `release/`. The window/taskbar/installer icon is `build/icon.ico` (electron-builder's default `buildResources` directory), so it is picked up with no extra config. The authoritative packaging config is `package.json → build` (electron-builder ignores `electron-builder.yml` whenever `package.json` has a `build` section, so the misleading duplicate was removed).
 
+## Android
+The same React UI ships as an Android app via Capacitor (`android/` project, app id `ai.lumen.app`). The Electron preload API is replaced by `src/platform/mobile.ts` — a `window.lumen`-compatible layer backed by sql.js (chat database persisted through the Filesystem plugin), Capacitor Preferences (provider keys) and CapacitorHttp (provider calls, buffered rather than token-streamed). Desktop-only features (workspace file tools, MCP servers, quick-chat window, auto-updater, tray, image attachments) are hidden in the mobile UI or stubbed.
+
+```sh
+npm run android:sync    # build renderer → copy dist into the Android project
+npm run android:build   # sync + assemble the debug APK (needs JDK 21 + Android SDK;
+                        # set JAVA_HOME/ANDROID_HOME if gradlew cannot find them)
+```
+The debug APK lands in `android/app/build/outputs/apk/debug/`. The mobile layout adapts automatically: the sidebar becomes an overlay drawer, chat tabs and the Windows titlebar disappear, settings go fullscreen, side panels become bottom sheets, the composer row wraps, safe-area insets are honored, and the hardware back button closes dialogs before backgrounding the app.
+
 ## Providers
 OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, DeepSeek and Mistral are preconfigured. Add a key in Settings → Providers. Credentials are encrypted using Electron `safeStorage` (Windows DPAPI); the app refuses to store a key when system encryption is unavailable. **Multiple custom endpoints** are supported ("+ Add provider" in Settings → Providers — up to 20, each with its own name, URL, key and model list); custom endpoints use the OpenAI-compatible `/models` and `/chat/completions` APIs. Remote endpoints must use HTTPS; `http://localhost` / `http://127.0.0.1` are allowed so local servers (Ollama, LM Studio) work out of the box. The Gemini API key is sent in a request header, never in the URL.
 

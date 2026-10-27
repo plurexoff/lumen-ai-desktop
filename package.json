@@ -1,6 +1,6 @@
 {
   "name": "lumen-ai-desktop",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "license": "MIT",
   "author": "Lumen AI contributors",
@@ -18,9 +18,12 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "lint": "eslint .",
     "test": "vitest run",
-    "dist:win": "npm run build && electron-builder --win nsis --config.asar=false"
+    "dist:win": "npm run build && electron-builder --win nsis --config.asar=false",
+    "android:sync": "npm run build:renderer && cap sync android",
+    "android:build": "npm run android:sync && cd android && gradlew assembleDebug"
   },
   "dependencies": {
+    "@capacitor/app": "^8.0.0",
     "@capacitor/core": "^8.5.3",
     "@capacitor/filesystem": "^8.1.5",
     "@capacitor/preferences": "^8.0.1",
