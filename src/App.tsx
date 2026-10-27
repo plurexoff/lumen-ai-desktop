@@ -17,7 +17,7 @@ type Tab='providers'|'appearance'|'agents'|'data'|'stats';
 // A selected persona overrides the system prompt and (when pinned) the temperature.
 const requestParams=(s:Prefs)=>{
  const persona=s.personas.find(p=>p.id===s.personaId);
- return{systemPrompt:persona?.prompt||s.systemPrompt,temperature:persona?.temperature??s.temperature,maxTokens:s.maxTokens,topP:s.topP};
+ return{systemPrompt:persona?.prompt||s.systemPrompt,temperature:persona?.temperature??s.temperature,maxTokens:s.maxTokens,topP:s.topP,reasoningEffort:s.reasoningEffort};
 };
 const newStream=(requestId:string):StreamState=>({requestId,text:'',reasoning:'',error:'',finishReason:null,usage:null,toolEvents:[]});
 // btoa() takes a binary string; chunking avoids a stack overflow on multi-MB images.

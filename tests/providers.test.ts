@@ -6,6 +6,7 @@ import {
  normalizeModelIds,mergeModelIds,MAX_MODELS_PER_PROVIDER,MAX_MESSAGE_CHARS,
  stripGeminiModelPrefix,trimHistory,normalizeHistory,
  isOpenAiReasoningModel,isGeminiThinkingModel,GEMINI_THINKING_BUDGET,
+ isAnthropicThinkingModel,ANTHROPIC_THINKING_BUDGETS,GEMINI_THINKING_BUDGETS,
  isKnownProviderId,validateProviderConfig,validateChatRequest,clampSettings,
  isValidHotkey,normalizeHotkeys,validatePersonas,cleanTitle,
  validatePricing,cleanEnhanced,DEFAULT_PRICING,ENHANCE_PROMPT,
@@ -19,6 +20,7 @@ const openai:ResolvedProvider={id:'openai',name:'OpenAI',url:'https://api.openai
 const anthropic:ResolvedProvider={id:'anthropic',name:'Anthropic',url:'https://api.anthropic.com/v1',key:'sk-ant'};
 const gemini:ResolvedProvider={id:'gemini',name:'Gemini',url:'https://generativelanguage.googleapis.com/v1beta',key:'SECRET-KEY-XYZ'};
 const ollama:ResolvedProvider={id:'ollama',name:'Ollama',url:'http://127.0.0.1:11434/v1',key:''};
+const openrouter:ResolvedProvider={id:'openrouter',name:'OpenRouter',url:'https://openrouter.ai/api/v1',key:'sk-or'};
 
 describe('SSE provider events',()=>{
  it('reads OpenAI-compatible delta text',()=>expect(parseSseEvent('data: {"choices":[{"delta":{"content":"hello"}}]}')).toBe('hello'));
@@ -320,6 +322,70 @@ describe('request building',()=>{
  it('reuses the OpenAI-compatible path for local servers',()=>{
   expect(buildModelsRequest(ollama).url).toBe('http://127.0.0.1:11434/v1/models');
   expect(buildChatRequest(ollama,[{role:'user',content:'hi'}],{model:'llama3'}).url).toBe('http://127.0.0.1:11434/v1/chat/completions');
+ });
+});
+
+describe('reasoning effort',()=>{
+ it('detects Anthropic thinking models',()=>{
+  expect(isAnthropicThinkingModel('claude-3-7-sonnet-20250219')).toBe(true);
+  expect(isAnthropicThinkingModel('claude-sonnet-4-20250514')).toBe(true);
+  expect(isAnthropicThinkingModel('anthropic/claude-opus-4')).toBe(true);
+  expect(isAnthropicThinkingModel('claude-3-5-haiku-20241022')).toBe(false);
+ });
+ // 'off' is the default and must not change any request: Gemini keeps its built-in
+ // 8k thinking budget, every other provider sends nothing extra.
+ it('sends nothing extra when the effort is off',()=>{
+  const o=buildChatRequest(openai,[{role:'user',content:'hi'}],{model:'o3-mini',reasoningEffort:'off'}).body as Record<string,unknown>;
+  expect(o.reasoning_effort).toBeUndefined();
+  const a=buildChatRequest(anthropic,[{role:'user',content:'hi'}],{model:'claude-sonnet-4-20250514',reasoningEffort:'off'}).body as Record<string,unknown>;
+  expect(a.thinking).toBeUndefined();
+  expect(a.temperature).toBeDefined();
+  const g=buildChatRequest(gemini,[{role:'user',content:'hi'}],{model:'gemini-2.5-pro',maxTokens:2048,reasoningEffort:'off'}).body as {generationConfig:{thinkingConfig:{thinkingBudget:number}}};
+  expect(g.generationConfig.thinkingConfig.thinkingBudget).toBe(GEMINI_THINKING_BUDGET);
+ });
+ it('passes reasoning_effort to OpenAI reasoning models only',()=>{
+  const o=buildChatRequest(openai,[{role:'user',content:'hi'}],{model:'o3-mini',reasoningEffort:'high'}).body as Record<string,unknown>;
+  expect(o.reasoning_effort).toBe('high');
+  const plain=buildChatRequest(openai,[{role:'user',content:'hi'}],{model:'gpt-4o',reasoningEffort:'high'}).body as Record<string,unknown>;
+  expect(plain.reasoning_effort).toBeUndefined();
+ });
+ // Extended thinking forbids temperature/top_p and max_tokens must exceed the budget.
+ it('sets a thinking budget and drops sampling params for Anthropic thinking models',()=>{
+  const body=buildChatRequest(anthropic,[{role:'user',content:'hi'}],{model:'claude-sonnet-4-20250514',reasoningEffort:'medium',maxTokens:2048,temperature:0.7}).body as Record<string,unknown>;
+  expect(body.thinking).toEqual({type:'enabled',budget_tokens:ANTHROPIC_THINKING_BUDGETS.medium});
+  expect(body.max_tokens).toBe(ANTHROPIC_THINKING_BUDGETS.medium+2048);
+  expect(body.temperature).toBeUndefined();
+  expect(body.top_p).toBeUndefined();
+  const old=buildChatRequest(anthropic,[{role:'user',content:'hi'}],{model:'claude-3-5-haiku-20241022',reasoningEffort:'high'}).body as Record<string,unknown>;
+  expect(old.thinking).toBeUndefined();
+  expect(old.temperature).toBeDefined();
+ });
+ it('rescales the Gemini thinking budget per level',()=>{
+  const body=(eff:'low'|'medium'|'high')=>(buildChatRequest(gemini,[{role:'user',content:'hi'}],{model:'gemini-2.5-pro',maxTokens:2048,reasoningEffort:eff}).body as {generationConfig:{maxOutputTokens:number;thinkingConfig:{thinkingBudget:number}}}).generationConfig;
+  expect(body('low').thinkingConfig.thinkingBudget).toBe(GEMINI_THINKING_BUDGETS.low);
+  expect(body('high').thinkingConfig.thinkingBudget).toBe(GEMINI_THINKING_BUDGETS.high);
+  expect(body('high').maxOutputTokens).toBe(2048+GEMINI_THINKING_BUDGETS.high);
+ });
+ it('maps the effort to reasoning.effort for OpenRouter',()=>{
+  const body=buildChatRequest(openrouter,[{role:'user',content:'hi'}],{model:'anthropic/claude-sonnet-4',reasoningEffort:'low'}).body as Record<string,unknown>;
+  expect(body.reasoning).toEqual({effort:'low'});
+  expect(body.reasoning_effort).toBeUndefined();
+ });
+ // DeepSeek/Mistral/Ollama/LM Studio have no such knob — nothing may leak to them.
+ it('never sends an effort field to providers without support',()=>{
+  const body=buildChatRequest(ollama,[{role:'user',content:'hi'}],{model:'llama3',reasoningEffort:'high'}).body as Record<string,unknown>;
+  expect(body.reasoning_effort).toBeUndefined();
+  expect(body.reasoning).toBeUndefined();
+ });
+ it('accepts a valid effort and rejects junk in chat requests',()=>{
+  const ok=validateChatRequest({requestId:'rq',chatId:'c1',providerId:'openai',model:'m',content:'hi',reasoningEffort:'medium'});
+  expect(ok.reasoningEffort).toBe('medium');
+  const junk=validateChatRequest({requestId:'rq',chatId:'c1',providerId:'openai',model:'m',content:'hi',reasoningEffort:'galaxy-brain'});
+  expect(junk.reasoningEffort).toBeUndefined();
+ });
+ it('clamps the stored setting to the allow-list',()=>{
+  expect(clampSettings({reasoningEffort:'high'})).toEqual({reasoningEffort:'high'});
+  expect(clampSettings({reasoningEffort:'extreme'})).toEqual({});
  });
 });
 

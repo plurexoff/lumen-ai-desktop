@@ -1,7 +1,7 @@
 import {useEffect,useState} from 'react';
 import {Archive,BarChart3,Bot,Check,FileDown,FolderOpen,Keyboard,LayoutTemplate,Moon,Monitor,Pencil,Plus,RotateCcw,Save,Server,Shield,Sparkles,Sun,Trash2,X} from 'lucide-react';
 import type {Accent,DayUsage,HotkeyMap,McpServer,Persona,PromptTemplate,ProviderConfig,ProviderId,UsageRow,UsageSummary} from '../../electron/shared';
-import {ACCENTS,DENSITIES,PERSONA_COLORS,THEME_PRESETS} from '../../electron/shared';
+import {ACCENTS,DENSITIES,PERSONA_COLORS,REASONING_EFFORTS,THEME_PRESETS} from '../../electron/shared';
 import type {Prefs} from '../store';
 import {providerColors} from '../store';
 import {formatCost,messageCost} from '../cost';
@@ -302,6 +302,11 @@ export default function SettingsModal(props:Props){
      <Field label={'Temperature · '+settings.temperature.toFixed(1)}><input type="range" min="0" max="2" step="0.1" value={settings.temperature} onChange={e=>void onPref('temperature',Number(e.target.value))}/></Field>
      <Field label="Max response tokens"><input type="number" min="128" max="32000" value={settings.maxTokens} onChange={e=>void onPref('maxTokens',Number(e.target.value))}/></Field>
      <Field label="Top P"><input type="number" min="0" max="1" step="0.05" value={settings.topP} onChange={e=>void onPref('topP',Number(e.target.value))}/></Field>
+     <Field label="Reasoning effort" hint="Thinking budget for reasoning models: OpenAI o-series/gpt-5, Claude 3.7+/4+, Gemini 2.5+, reasoning models via OpenRouter. 'Provider default' changes nothing.">
+      <div className="density-picker">{REASONING_EFFORTS.map(eff=>
+       <button key={eff} className={settings.reasoningEffort===eff?'active':''} onClick={()=>void onPref('reasoningEffort',eff)} aria-pressed={settings.reasoningEffort===eff}>{eff==='off'?'Provider default':eff[0].toUpperCase()+eff.slice(1)}</button>)}
+      </div>
+     </Field>
      <Field label="System prompt"><textarea rows={4} value={settings.systemPrompt} onChange={e=>void onPref('systemPrompt',e.target.value)}/></Field>
      <Field label="Density" hint="How much air the interface has — compact fits more text on screen.">
       <div className="density-picker">{DENSITIES.map(d=>

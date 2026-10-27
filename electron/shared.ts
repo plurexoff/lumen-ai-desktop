@@ -51,7 +51,7 @@ export interface MessageVariant { id: string; messageId: string; content: string
 // `regenerateMessageId` names the assistant turn to replace (kept as a variant);
 // `truncateFromMessageId` deletes that message and everything after it as part of
 // THIS request, so an edit-and-resend can never delete the tail and then fail.
-export interface ChatRequest { requestId: string; chatId: string; providerId: ProviderId; model: string; content: string; systemPrompt?: string; temperature?: number; maxTokens?: number; topP?: number; skipUserPersist?: boolean; continueMessageId?: string; regenerateMessageId?: string; truncateFromMessageId?: string; attachments?: NewAttachment[]; }
+export interface ChatRequest { requestId: string; chatId: string; providerId: ProviderId; model: string; content: string; systemPrompt?: string; temperature?: number; maxTokens?: number; topP?: number; reasoningEffort?: ReasoningEffort; skipUserPersist?: boolean; continueMessageId?: string; regenerateMessageId?: string; truncateFromMessageId?: string; attachments?: NewAttachment[]; }
 export interface ChatChunk { requestId: string; chatId: string; text: string; reasoning?: string; done?: boolean; stopped?: boolean; error?: string; promptTokens?: number; completionTokens?: number; finishReason?: FinishReason; status?: string; }
 export interface ActiveStream { chatId: string; requestId: string }
 export interface UsageRow { providerId: string | null; model: string | null; messages: number; promptTokens: number; completionTokens: number }
@@ -73,7 +73,13 @@ export const THEME_PRESETS = ['default', 'midnight', 'sepia'] as const;
 export type ThemePreset = (typeof THEME_PRESETS)[number];
 export const DENSITIES = ['comfortable', 'default', 'compact'] as const;
 export type Density = (typeof DENSITIES)[number];
-export interface SettingsData { theme: 'dark' | 'light'; systemPrompt: string; temperature: number; maxTokens: number; topP: number; minimizeToTray: boolean; autoStart: boolean; notifications: boolean; accent: Accent; personas: Persona[]; personaId: string; hotkeys: HotkeyMap; templates: PromptTemplate[]; defaultWorkspace: string; customCss: string; compactMode: boolean; mcpServers: McpServer[]; density: Density; themePreset: ThemePreset; }
+// Reasoning ("thinking") effort. 'off' = provider default behavior (Gemini keeps
+// its built-in 8k thinking budget, others send nothing). Levels map per provider:
+// OpenAI reasoning_effort, Anthropic thinking.budget_tokens, Gemini thinkingBudget,
+// OpenRouter reasoning.effort.
+export const REASONING_EFFORTS = ['off', 'low', 'medium', 'high'] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+export interface SettingsData { theme: 'dark' | 'light'; systemPrompt: string; temperature: number; maxTokens: number; topP: number; minimizeToTray: boolean; autoStart: boolean; notifications: boolean; accent: Accent; personas: Persona[]; personaId: string; hotkeys: HotkeyMap; templates: PromptTemplate[]; defaultWorkspace: string; customCss: string; compactMode: boolean; mcpServers: McpServer[]; density: Density; themePreset: ThemePreset; reasoningEffort: ReasoningEffort; }
 export interface AppProfile { mica: boolean; username: string }
 export interface DesktopAPI {
  window: { minimize():void; toggleMaximize():void; close():void; setAlwaysOnTop(on:boolean):void };

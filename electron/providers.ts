@@ -21,6 +21,7 @@ export interface RequestParams {
  temperature?: number;
  maxTokens?: number;
  topP?: number;
+ reasoningEffort?: import('./shared').ReasoningEffort;
  tools?: ToolDef[];
 }
 // Keep the context bounded: recent turns first so long chats cannot overflow the
@@ -259,6 +260,14 @@ export function isOpenAiReasoningModel(model: string): boolean {
 // emitted no visible text at all.
 export function isGeminiThinkingModel(model: string): boolean { return /gemini-(2\.5|3)/.test(model); }
 export const GEMINI_THINKING_BUDGET = 8192;
+// Claude 3.7+ and the 4-series support extended thinking with an explicit budget.
+export function isAnthropicThinkingModel(model: string): boolean {
+ const bare = (model.split('/').pop() ?? model).trim().toLowerCase();
+ return /^claude-(3-7|[a-z]+-4|[a-z]+-[5-9])/.test(bare);
+}
+// Per-level token budgets for providers that want numbers instead of labels.
+export const ANTHROPIC_THINKING_BUDGETS = { low: 1024, medium: 4096, high: 12000 } as const;
+export const GEMINI_THINKING_BUDGETS = { low: 1024, medium: GEMINI_THINKING_BUDGET, high: 16384 } as const;
 
 // Generous ceiling: OpenRouter alone lists several hundred models, so the old limit
 // of 200 made "Refresh models" fail outright for it. Still a hard error rather than
@@ -338,6 +347,7 @@ export function validateChatRequest(input: unknown): ChatRequest {
  if ('temperature' in r) out.temperature = clamp(r.temperature, 0, 2, 0.7);
  if ('maxTokens' in r) out.maxTokens = Math.round(clamp(r.maxTokens, 128, 32000, 2048));
  if ('topP' in r) out.topP = clamp(r.topP, 0, 1, 1);
+ if (r.reasoningEffort === 'off' || r.reasoningEffort === 'low' || r.reasoningEffort === 'medium' || r.reasoningEffort === 'high') out.reasoningEffort = r.reasoningEffort;
  if (r.skipUserPersist === true) out.skipUserPersist = true;
  const cont = opt(r.continueMessageId); if (cont) out.continueMessageId = cont;
  const regen = opt(r.regenerateMessageId); if (regen) out.regenerateMessageId = regen;
@@ -415,6 +425,10 @@ export function clampSettings(input: Record<string, unknown>): Record<string, un
  if ('themePreset' in input) {
   const tp = input.themePreset;
   if (tp === 'default' || tp === 'midnight' || tp === 'sepia') out.themePreset = tp;
+ }
+ if ('reasoningEffort' in input) {
+  const e = input.reasoningEffort;
+  if (e === 'off' || e === 'low' || e === 'medium' || e === 'high') out.reasoningEffort = e;
  }
  if ('mcpServers' in input) {
   const servers = validateMcpServers(input.mcpServers);
@@ -574,14 +588,18 @@ export function buildChatRequest(p: ResolvedProvider, history: HistoryMessage[],
   // clamp allow 0–2 (the OpenAI range). Forwarding 1.5 verbatim is a guaranteed
   // 400 ("temperature: must be <= 1"), so narrow it here rather than reject the send.
   const temperature = Math.min(1, Math.max(0, params.temperature ?? 0.7));
+  // Extended thinking (batch: reasoning effort): Claude 3.7+/4+ accepts an explicit
+  // budget in tokens; while thinking is on, temperature/top_p are rejected by the
+  // API and max_tokens must exceed the budget.
+  const aEffort = params.reasoningEffort && params.reasoningEffort !== 'off' && isAnthropicThinkingModel(params.model) ? params.reasoningEffort : null;
+  const aBudget = aEffort ? ANTHROPIC_THINKING_BUDGETS[aEffort] : 0;
   return {
    url: p.url + '/messages',
    headers: { ...authHeaders(p), 'content-type': 'application/json' },
    body: {
     model: params.model,
-    max_tokens: params.maxTokens ?? 2048,
-    temperature,
-    top_p: params.topP ?? 1,
+    max_tokens: aBudget ? aBudget + (params.maxTokens ?? 2048) : params.maxTokens ?? 2048,
+    ...(aBudget ? { thinking: { type: 'enabled', budget_tokens: aBudget } } : { temperature, top_p: params.topP ?? 1 }),
     system: params.systemPrompt,
     ...(params.tools?.length ? { tools: params.tools.map(t => ({ name: t.name, description: t.description, input_schema: t.schema })) } : {}),
     // Anthropic vision: image blocks precede the text block. Plain-text turns keep
@@ -607,8 +625,11 @@ export function buildChatRequest(p: ResolvedProvider, history: HistoryMessage[],
   const model = stripGeminiModelPrefix(params.model);
   const thinking = isGeminiThinkingModel(model);
   const requested = params.maxTokens ?? 2048;
+  // Reasoning effort: 'off' keeps the built-in 8k budget; explicit levels rescale it.
+  const gEffort = params.reasoningEffort && params.reasoningEffort !== 'off' ? params.reasoningEffort : null;
+  const gBudget = gEffort ? GEMINI_THINKING_BUDGETS[gEffort] : GEMINI_THINKING_BUDGET;
   // Thinking budget is deducted from maxOutputTokens, so floor the visible budget.
-  const maxOutputTokens = thinking ? Math.max(requested, GEMINI_THINKING_BUDGET + requested) : requested;
+  const maxOutputTokens = thinking ? Math.max(requested, gBudget + requested) : requested;
   return {
    url: p.url + '/models/' + encodeURIComponent(model) + ':streamGenerateContent?alt=sse',
    headers: { ...authHeaders(p), 'content-type': 'application/json' },
@@ -635,12 +656,21 @@ export function buildChatRequest(p: ResolvedProvider, history: HistoryMessage[],
      temperature: params.temperature ?? 0.7,
      topP: params.topP ?? 1,
      maxOutputTokens,
-     ...(thinking ? { thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET } } : {}),
+     ...(thinking ? { thinkingConfig: { thinkingBudget: gBudget } } : {}),
     },
    },
   };
  }
  const reasoning = isOpenAiReasoningModel(params.model);
+ // Reasoning effort (batch: thinking level). OpenAI o-series/gpt-5 and Groq's
+ // reasoning models take reasoning_effort; OpenRouter has a unified reasoning.effort
+ // that it maps across vendors; custom endpoints get reasoning_effort on opt-in.
+ // DeepSeek/Mistral and local servers have no such knob — nothing is sent to them.
+ const effort = params.reasoningEffort && params.reasoningEffort !== 'off' ? params.reasoningEffort : null;
+ const bareModel = params.model.toLowerCase();
+ const effortOk = p.id === 'custom'
+  || (p.id === 'openai' && reasoning)
+  || (p.id === 'groq' && /deepseek-r1|qwq|qwen3/.test(bareModel));
  return {
   url: p.url + '/chat/completions',
   headers: { ...authHeaders(p), 'content-type': 'application/json' },
@@ -660,6 +690,8 @@ export function buildChatRequest(p: ResolvedProvider, history: HistoryMessage[],
    // max_completion_tokens instead of max_tokens.
    ...(reasoning ? {} : { temperature: params.temperature ?? 0.7, top_p: params.topP ?? 1 }),
    ...(reasoning ? { max_completion_tokens: params.maxTokens ?? 2048 } : { max_tokens: params.maxTokens ?? 2048 }),
+   ...(effort && effortOk ? { reasoning_effort: effort } : {}),
+   ...(effort && p.id === 'openrouter' ? { reasoning: { effort } } : {}),
    stream: true,
    // Without this OpenAI-compatible servers never send the final usage chunk, so
    // token accounting was silently null for this whole family of providers.
