@@ -3,7 +3,7 @@ import {AlertTriangle,Archive,BookOpen,CheckSquare,Command,FileClock,FolderOpen,
 import {useApp} from './store';
 import type {PendingImage,Prefs,State,StreamState} from './store';
 import type {Chat,ChatChunk,ChatDoc,CompareAnswer,FileOp,Folder,Message,MessageVariant,ProviderConfig,ProviderId,TodoItem} from '../electron/shared';
-import {IMAGE_MIMES,MAX_ATTACHMENT_BYTES,MAX_IMAGE_ATTACHMENTS} from '../electron/shared';
+import {IMAGE_MIMES,isCustomProviderId,MAX_ATTACHMENT_BYTES,MAX_IMAGE_ATTACHMENTS} from '../electron/shared';
 import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
 import Welcome from './components/Welcome';
@@ -36,7 +36,7 @@ const LOCAL_PROVIDER_IDS=new Set<ProviderId>(['ollama','lmstudio']);
 // A loopback endpoint needs no API key, so a local custom provider counts as usable
 // too. This only drives the onboarding hint; main.ts is the authority on sending.
 const isLocalProvider=(p:ProviderConfig)=>LOCAL_PROVIDER_IDS.has(p.id)||
- (p.id==='custom'&&(p.baseUrl.includes('://localhost')||p.baseUrl.includes('://127.0.0.1')||p.baseUrl.includes('://[::1]')));
+ (isCustomProviderId(p.id)&&(p.baseUrl.includes('://localhost')||p.baseUrl.includes('://127.0.0.1')||p.baseUrl.includes('://[::1]')));
 
 export default function App(){
  const chats=useApp(s=>s.chats);
@@ -592,6 +592,13 @@ export default function App(){
   catch(e){flash(e instanceof Error?e.message:'Unable to remove');}
  },[flash,set]);
 
+ // Creates an empty custom endpoint ("custom-<hex>") and selects it; the user then
+ // fills in the URL/key and presses Save like for any other provider.
+ const createProvider=useCallback(async()=>{
+  try{const created=await window.lumen.providers.create('');const updated=await window.lumen.providers.list();set({providers:updated,providerId:created.id,model:''});return created;}
+  catch(e){flash(e instanceof Error?e.message:'Unable to add a provider');return undefined;}
+ },[flash,set]);
+
  const testProvider=useCallback(async()=>{const result=await window.lumen.providers.test(useApp.getState().providerId);flash(result.message);},[flash]);
 
  const refreshModels=useCallback(async()=>{
@@ -1043,7 +1050,7 @@ export default function App(){
   {showSettings&&<SettingsModal tab={tab} onTab={setTab} providers={providers} providerId={providerId} model={model}
     settings={settings} hasActiveChat={!!active} onClose={closeSettings}
     onProviderSelect={changeProvider} onModel={selectModel} onPref={pref}
-    onSaveProvider={saveProvider} onRemoveProvider={removeProvider} onTestProvider={testProvider}
+    onSaveProvider={saveProvider} onRemoveProvider={removeProvider} onCreateProvider={createProvider} onTestProvider={testProvider}
     onRefreshModels={refreshModels} refreshingModels={refreshingModels}
     onExport={exportChat} onExportPrepared={exportPrepared} onExportZip={exportZip} onWipe={wipeData} onOpenDataFolder={openDataFolder}
     notice={notice} onNotice={flash}/>}

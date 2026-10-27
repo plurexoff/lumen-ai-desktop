@@ -1,7 +1,7 @@
 import {useEffect,useState} from 'react';
 import {Archive,BarChart3,Bot,Check,FileDown,FolderOpen,Keyboard,LayoutTemplate,Moon,Monitor,Pencil,Plus,RotateCcw,Save,Server,Shield,Sparkles,Sun,Trash2,X} from 'lucide-react';
 import type {Accent,DayUsage,HotkeyMap,McpServer,Persona,PromptTemplate,ProviderConfig,ProviderId,UsageRow,UsageSummary} from '../../electron/shared';
-import {ACCENTS,DENSITIES,PERSONA_COLORS,REASONING_EFFORTS,THEME_PRESETS} from '../../electron/shared';
+import {ACCENTS,DENSITIES,isCustomProviderId,PERSONA_COLORS,REASONING_EFFORTS,THEME_PRESETS} from '../../electron/shared';
 import type {Prefs} from '../store';
 import {providerColors} from '../store';
 import {formatCost,messageCost} from '../cost';
@@ -22,6 +22,7 @@ interface Props{
  onPref:<K extends keyof Prefs>(key:K,value:Prefs[K])=>void;
  onSaveProvider:(config:ProviderConfig,key?:string)=>Promise<ProviderConfig|undefined>;
  onRemoveProvider:(id:ProviderId)=>Promise<void>;
+ onCreateProvider:()=>Promise<ProviderConfig|undefined>;
  onTestProvider:()=>void;
  onRefreshModels:()=>Promise<void>;
  refreshingModels:boolean;
@@ -178,7 +179,7 @@ function PersonaEditor({persona,providers,onSave,onCancel}:{persona:Persona;prov
 }
 
 export default function SettingsModal(props:Props){
- const {tab,onTab,providers,providerId,model,settings,hasActiveChat,onClose,onProviderSelect,onModel,onPref,onSaveProvider,onRemoveProvider,onTestProvider,onRefreshModels,refreshingModels,onExport,onExportPrepared,onExportZip,onWipe,onOpenDataFolder,notice,onNotice}=props;
+ const {tab,onTab,providers,providerId,model,settings,hasActiveChat,onClose,onProviderSelect,onModel,onPref,onSaveProvider,onRemoveProvider,onCreateProvider,onTestProvider,onRefreshModels,refreshingModels,onExport,onExportPrepared,onExportZip,onWipe,onOpenDataFolder,notice,onNotice}=props;
  const [apiKey,setApiKey]=useState('');
  const [baseUrl,setBaseUrl]=useState('');
  const [providerName,setProviderName]=useState('');
@@ -190,6 +191,9 @@ export default function SettingsModal(props:Props){
  const [editingTemplate,setEditingTemplate]=useState<PromptTemplate|null>(null);
  const provider=providers.find(p=>p.id===providerId);
  const pinned=PINNED_IDS.has(providerId);
+ // Any custom endpoint (the legacy 'custom' or a generated 'custom-<hex>') is fully
+ // editable: name, URL, key — and removable.
+ const isCustom=isCustomProviderId(providerId);
 
  // Load lifetime token usage when the data tab is opened.
  useEffect(()=>{
@@ -213,14 +217,13 @@ export default function SettingsModal(props:Props){
  }
  async function saveProvider(){
   if(!provider)return;
-  const updated=await persist({...provider,baseUrl:pinned?provider.baseUrl:(baseUrl||provider.baseUrl)},apiKey||undefined);
+  const name=isCustom?(providerName.trim()||provider.name):provider.name;
+  const updated=await persist({...provider,name,baseUrl:pinned?provider.baseUrl:(baseUrl||provider.baseUrl)},apiKey||undefined);
   if(updated){onNotice('Saved securely');if(updated.models[0])onModel(updated.models[0]);}
  }
- async function addCustom(){
-  const existing=providers.find(p=>p.id==='custom');
-  const config:ProviderConfig={id:'custom',name:providerName||existing?.name||'Custom provider',baseUrl:baseUrl||existing?.baseUrl||'',models:existing?.models??[]};
-  const saved=await persist(config,apiKey||undefined);
-  if(saved){onProviderSelect('custom');onModel(saved.models[0]??'');onNotice('Custom provider saved');}
+ async function addProvider(){
+  const created=await onCreateProvider();
+  if(created){setApiKey('');setBaseUrl('');setProviderName('');onNotice('Custom provider added — set its URL and key below');}
  }
  async function addModels(){
   if(!provider)return;
@@ -254,11 +257,13 @@ export default function SettingsModal(props:Props){
      <div className="provider-grid">{providers.map(p=>
       <button key={p.id} className={'provider-option '+(providerId===p.id?'chosen':'')}
        onClick={()=>{onProviderSelect(p.id);setBaseUrl(p.baseUrl);setProviderName(p.name);if(p.models[0])onModel(p.models[0]);}}>
-       <span style={{color:providerColors[p.id]}}>{p.name[0]}</span>{p.name}
+       <span style={{color:providerColors[p.id]??providerColors.custom}}>{p.name[0]}</span>{p.name}
        {p.hasKey&&<i className="key-dot" title="API key saved">●</i>}
        {providerId===p.id&&<Check size={13}/>}
-      </button>)}</div>
-     {providerId==='custom'&&<><h3>Custom provider</h3>
+      </button>)}
+      <button className="provider-option provider-add" onClick={()=>void addProvider()} title="Add a custom OpenAI-compatible endpoint">+ Add provider</button>
+     </div>
+     {isCustom&&<><h3>Custom provider</h3>
       <Field label="Provider name"><input value={providerName||provider?.name||''} onChange={e=>setProviderName(e.target.value)} placeholder="My provider"/></Field></>}
      <Field label={'API key'+(provider?.hasKey?' (saved)':'')}>
       <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={provider?.hasKey?'Leave blank to keep the current key':'Paste your API key'} autoComplete="off"/>
@@ -274,8 +279,8 @@ export default function SettingsModal(props:Props){
      <div className="settings-actions">
       <button className="secondary-button" onClick={onTestProvider}>Test connection</button>
       <button className="secondary-button" disabled={refreshingModels} onClick={()=>void onRefreshModels()}>{refreshingModels?'Loading…':'Refresh models'}</button>
-      <button className="primary-button" disabled={busy} onClick={()=>providerId==='custom'?void addCustom():void saveProvider()}>{providerId==='custom'?'Save custom provider':'Save provider'}</button>
-      {providerId==='custom'&&provider&&<button className="danger-button" disabled={busy} onClick={()=>{void onRemoveProvider('custom');onProviderSelect('openai');onNotice('Custom provider removed');}}>Remove</button>}
+      <button className="primary-button" disabled={busy} onClick={()=>void saveProvider()}>{isCustom?'Save custom provider':'Save provider'}</button>
+      {isCustom&&provider&&<button className="danger-button" disabled={busy} onClick={()=>{void onRemoveProvider(providerId);onProviderSelect('openai');onNotice('Custom provider removed');}}>Remove</button>}
      </div>
      <div className="models-heading"><div><h3>Available models</h3><p>Manually add model IDs or refresh from the provider API.</p></div></div>
      <div className="model-list">{(provider?.models??[]).map(item=>

@@ -268,7 +268,7 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
      </select>
      <span className="picker-divider" aria-hidden="true"/>
     </>}
-    <span className="provider-dot" style={{background:providerColors[providerId]}} aria-hidden="true"/>
+    <span className="provider-dot" style={{background:providerColors[providerId]??providerColors.custom}} aria-hidden="true"/>
     <select value={providerId} onChange={e=>onProvider(e.target.value as ProviderId)} aria-label="Provider">{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>
     <span className="picker-divider" aria-hidden="true"/>
     <select value={model} onChange={e=>onModel(e.target.value)} disabled={!models.length} aria-label="Model">

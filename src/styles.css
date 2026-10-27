@@ -540,3 +540,7 @@ html:has(.app-shell.mica){background:transparent}
 .composer textarea:focus-visible,.message-edit textarea:focus-visible{outline:none}
 .composer textarea{margin-bottom:6px}
 .composer:focus-within{box-shadow:0 0 0 2px var(--accent-dim),var(--shadow-2)}
+
+/* Multiple custom providers: the "add" tile in the provider grid. */
+.provider-add{border-style:dashed;justify-content:center;color:var(--faint)}
+.provider-add:hover{border-color:var(--accent);color:var(--accent)}

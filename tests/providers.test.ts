@@ -164,6 +164,22 @@ describe('reasoning model detection',()=>{
 
 describe('IPC input validation',()=>{
  it('accepts the known provider ids',()=>{expect(isKnownProviderId('ollama')).toBe(true);expect(isKnownProviderId('nope')).toBe(false);expect(isKnownProviderId(7)).toBe(false);});
+ // Multiple custom providers get generated "custom-<slug>" ids; the shape is
+ // enforced so nothing weird becomes a DB key.
+ it('accepts generated custom provider ids and rejects lookalikes',()=>{
+  expect(isKnownProviderId('custom')).toBe(true);
+  expect(isKnownProviderId('custom-a1b2c3d4')).toBe(true);
+  expect(isKnownProviderId('custom-')).toBe(false);
+  expect(isKnownProviderId('custom-A1')).toBe(false);
+  expect(isKnownProviderId('custom_1')).toBe(false);
+  expect(isKnownProviderId('custom-'+('x'.repeat(39)))).toBe(true);
+  expect(isKnownProviderId('custom-'+('x'.repeat(40)))).toBe(false);
+ });
+ it('accepts a config for a generated custom provider id',()=>{
+  const c=validateProviderConfig({id:'custom-a1b2c3d4',name:'Second box',baseUrl:'https://api2.example.com/v1',models:['m']},pinned);
+  expect(c.id).toBe('custom-a1b2c3d4');
+  expect(c.baseUrl).toBe('https://api2.example.com/v1');
+ });
 
  const pinned=new Map<ProviderId,string>([['openai','https://api.openai.com/v1']]);
 
@@ -376,6 +392,17 @@ describe('reasoning effort',()=>{
   const body=buildChatRequest(ollama,[{role:'user',content:'hi'}],{model:'llama3',reasoningEffort:'high'}).body as Record<string,unknown>;
   expect(body.reasoning_effort).toBeUndefined();
   expect(body.reasoning).toBeUndefined();
+ });
+ // Every custom endpoint (legacy 'custom' or generated 'custom-<hex>') is treated
+ // as OpenAI-compatible and gets reasoning_effort on opt-in.
+ it('sends reasoning_effort to any custom endpoint',()=>{
+  const mine:ResolvedProvider={id:'custom-a1b2c3d4',name:'Mine',url:'https://api.example.com/v1',key:'sk'};
+  const body=buildChatRequest(mine,[{role:'user',content:'hi'}],{model:'some-model',reasoningEffort:'low'}).body as Record<string,unknown>;
+  expect(body.reasoning_effort).toBe('low');
+ });
+ it('accepts a generated custom provider id in chat requests',()=>{
+  const r=validateChatRequest({requestId:'rq',chatId:'c1',providerId:'custom-a1b2c3d4',model:'m',content:'hi'});
+  expect(r.providerId).toBe('custom-a1b2c3d4');
  });
  it('accepts a valid effort and rejects junk in chat requests',()=>{
   const ok=validateChatRequest({requestId:'rq',chatId:'c1',providerId:'openai',model:'m',content:'hi',reasoningEffort:'medium'});

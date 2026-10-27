@@ -1,5 +1,5 @@
 import type { ChatRequest, FinishReason, HotkeyMap, McpServer, ModelPrice, NewAttachment, Persona, PricingMap, PromptTemplate, ProviderConfig, ProviderId } from './shared';
-import { ACCENTS, DEFAULT_HOTKEYS, IMAGE_MIMES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_MCP_SERVERS, MAX_PERSONAS, MAX_TEMPLATES, PERSONA_COLORS } from './shared';
+import { ACCENTS, DEFAULT_HOTKEYS, IMAGE_MIMES, isCustomProviderId, MAX_ATTACHMENT_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_MCP_SERVERS, MAX_PERSONAS, MAX_TEMPLATES, PERSONA_COLORS } from './shared';
 
 export interface ResolvedProvider { id: string; name: string; url: string; key: string; }
 // `images` are base64 payloads inlined into the provider request (all supported
@@ -296,8 +296,11 @@ export function mergeModelIds(current: string[], incoming: string[]): string[] {
 // argument is validated here instead of being believed. Clamping beats throwing so
 // a stale or odd value degrades instead of breaking the send/stop flow.
 const KNOWN_PROVIDER_IDS: ProviderId[] = ['openai','anthropic','gemini','openrouter','groq','deepseek','mistral','ollama','lmstudio','custom'];
+// Custom endpoints get generated "custom-<slug>" ids; the shape is enforced so a
+// renderer cannot smuggle path separators or oversized ids into DB keys.
+const CUSTOM_PROVIDER_ID = /^custom-[a-z0-9][a-z0-9-]{0,38}$/;
 export function isKnownProviderId(value: unknown): value is ProviderId {
- return typeof value === 'string' && (KNOWN_PROVIDER_IDS as string[]).includes(value);
+ return typeof value === 'string' && ((KNOWN_PROVIDER_IDS as string[]).includes(value) || CUSTOM_PROVIDER_ID.test(value));
 }
 
 export function validateProviderConfig(input: unknown, pinnedUrls: Map<ProviderId, string>): ProviderConfig {
@@ -668,7 +671,7 @@ export function buildChatRequest(p: ResolvedProvider, history: HistoryMessage[],
  // DeepSeek/Mistral and local servers have no such knob — nothing is sent to them.
  const effort = params.reasoningEffort && params.reasoningEffort !== 'off' ? params.reasoningEffort : null;
  const bareModel = params.model.toLowerCase();
- const effortOk = p.id === 'custom'
+ const effortOk = isCustomProviderId(p.id)
   || (p.id === 'openai' && reasoning)
   || (p.id === 'groq' && /deepseek-r1|qwq|qwen3/.test(bareModel));
  return {

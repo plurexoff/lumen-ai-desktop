@@ -16,7 +16,7 @@ import { TOOL_DEFS, WORKSPACE_PROMPT, MAX_TOOL_ROUNDS, runToolCall, restoreSnaps
 import { mcpTools, mcpCall, mcpShutdown } from './mcp';
 import { randomUUID } from 'node:crypto';
 import type { ProviderConfig, ProviderId, FinishReason, ActiveStream, UsageRow, UsageSummary, Folder, SearchFilters, DayUsage, FileOp, ChatDoc, McpServer, CompareAnswer, ToolEvent, HotkeyMap } from './shared';
-import { MAX_DOC_CHARS, MAX_DOCS_PER_CHAT } from './shared';
+import { MAX_DOC_CHARS, MAX_DOCS_PER_CHAT, isCustomProviderId } from './shared';
 
 // Lightweight structured logging: main-process failures were previously invisible.
 function log(...args: unknown[]) { console.log('[lumen]', ...args); }
@@ -41,6 +41,8 @@ const defaults:ProviderConfig[]=[
 // presets (ollama/lmstudio/custom) stay editable because ports vary.
 const PINNED_PROVIDER_IDS=new Set<ProviderId>(['openai','anthropic','gemini','openrouter','groq','deepseek','mistral']);
 const PINNED_URLS=new Map<ProviderId,string>(defaults.filter(d=>PINNED_PROVIDER_IDS.has(d.id)).map(d=>[d.id,validateProviderUrl(d.baseUrl)] as [ProviderId,string]));
+// Cap on user-added custom endpoints (each is a row + a secret slot).
+const MAX_CUSTOM_PROVIDERS=20;
 // A stalled stream must not leave the UI stuck in "busy" forever.
 const STREAM_IDLE_MS=60000;
 // Cumulative tool-output cap per answer: keeps a runaway tool loop from stuffing
@@ -577,7 +579,18 @@ function initIpc(){
  });
  ipcMain.handle('providers:list',()=>query('SELECT id,name,base_url as baseUrl,models,pricing,(SELECT COUNT(*) FROM secrets s WHERE s.id=providers.id)>0 AS hasKey FROM providers').map((v)=>{const p=v as {models:string;pricing:string|null;hasKey:number};let pricing:ProviderConfig['pricing'];try{pricing=p.pricing?JSON.parse(p.pricing):undefined;}catch{pricing=undefined;}return{...v,models:JSON.parse(p.models),pricing,hasKey:Number(p.hasKey)>0};}));
  ipcMain.handle('providers:save',(_e,c:unknown,key?:string)=>{const config=validateProviderConfig(c,PINNED_URLS);run('INSERT INTO providers(id,name,base_url,models,pricing) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,models=excluded.models,pricing=excluded.pricing',[config.id,config.name,config.baseUrl,JSON.stringify(config.models),JSON.stringify(config.pricing??{})]);if(typeof key==='string'&&key){if(!safeStorage.isEncryptionAvailable())throw new Error('Windows secure storage unavailable');run('INSERT OR REPLACE INTO secrets VALUES(?,?)',[config.id,safeStorage.encryptString(key)]);}});
- ipcMain.handle('providers:remove',(_e,id:ProviderId)=>{if(!isKnownProviderId(id))return;run('DELETE FROM secrets WHERE id=?',[id]);if(id==='custom')run('DELETE FROM providers WHERE id=?',[id]);});
+ ipcMain.handle('providers:remove',(_e,id:ProviderId)=>{if(!isKnownProviderId(id))return;run('DELETE FROM secrets WHERE id=?',[id]);if(isCustomProviderId(id))run('DELETE FROM providers WHERE id=?',[id]);});
+ // Multiple custom endpoints: each gets a generated "custom-<hex>" id. The row is
+ // created with an empty base URL — the renderer fills it in and providers:save
+ // does the full validation then. Capped so a broken renderer cannot flood the DB.
+ ipcMain.handle('providers:create',(_e,name:unknown)=>{
+  const clean=typeof name==='string'?name.trim().slice(0,60):'';
+  const count=(one("SELECT COUNT(*) AS n FROM providers WHERE id LIKE 'custom-%'") as {n:number}).n;
+  if(count>=MAX_CUSTOM_PROVIDERS)throw new Error('At most '+MAX_CUSTOM_PROVIDERS+' custom providers');
+  const id='custom-'+randomUUID().slice(0,8);
+  run('INSERT INTO providers(id,name,base_url,models) VALUES(?,?,?,?)',[id,clean||'Custom provider','', '[]']);
+  return{id,name:clean||'Custom provider',baseUrl:'',models:[],hasKey:false} as ProviderConfig;
+ });
  ipcMain.handle('settings:get',()=>{const rows=query('SELECT key,value FROM settings') as Array<{key:string;value:string}>;const v=Object.fromEntries(rows.map(x=>[x.key,JSON.parse(x.value)]));return{theme:v.theme??'dark',systemPrompt:v.systemPrompt??'',temperature:v.temperature??0.7,maxTokens:v.maxTokens??2048,topP:v.topP??1,minimizeToTray:v.minimizeToTray===true,autoStart:v.autoStart===true,notifications:v.notifications===true,accent:v.accent??'violet',personas:Array.isArray(v.personas)?v.personas:[],personaId:typeof v.personaId==='string'?v.personaId:'',hotkeys:normalizeHotkeys(v.hotkeys),templates:Array.isArray(v.templates)?v.templates:[],defaultWorkspace:typeof v.defaultWorkspace==='string'?v.defaultWorkspace:'',customCss:typeof v.customCss==='string'?v.customCss:'',compactMode:v.compactMode===true,mcpServers:Array.isArray(v.mcpServers)?v.mcpServers:[],density:v.density==='comfortable'||v.density==='compact'?v.density:(v.compactMode===true?'compact':'default'),themePreset:v.themePreset==='midnight'||v.themePreset==='sepia'?v.themePreset:'default',reasoningEffort:v.reasoningEffort==='low'||v.reasoningEffort==='medium'||v.reasoningEffort==='high'?v.reasoningEffort:'off'};});ipcMain.handle('settings:save',(_e,s:Record<string,unknown>)=>{if(!s||typeof s!=='object')return;const clamped=clampSettings(s);for(const[k,v]of Object.entries(clamped))run('INSERT OR REPLACE INTO settings VALUES(?,?)',[k,JSON.stringify(v)]);if(clamped.theme)nativeTheme.themeSource=clamped.theme as 'dark'|'light';
   // Side effects of system settings are applied here, not at next launch.
   if('autoStart' in clamped)app.setLoginItemSettings({openAtLogin:clamped.autoStart===true});

@@ -53,6 +53,7 @@ const api:DesktopAPI={
  },
  providers:{
   list:()=>ipcRenderer.invoke('providers:list'),
+  create:(name)=>ipcRenderer.invoke('providers:create',name),
   save:(config,key)=>ipcRenderer.invoke('providers:save',config,key),
   remove:id=>ipcRenderer.invoke('providers:remove',id),
   models:id=>ipcRenderer.invoke('providers:models',id),
