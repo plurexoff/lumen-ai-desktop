@@ -550,10 +550,52 @@ html:has(.app-shell.mica){background:transparent}
 
 /* ================= Android (Capacitor WebView) ================= */
 @media (max-width:760px){
- .sidebar{position:fixed;left:0;top:0;bottom:0;z-index:60;width:min(300px,84vw);box-shadow:var(--shadow-2)}
+ /* The desktop shell pins body to 900x620 — inside a phone WebView that makes the
+    whole page overflow and render zoomed-out/stretched. */
+ html,body{min-width:0!important;min-height:0!important}
  .app-shell{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
- .message-list{padding:16px 12px 12px}
- .composer{margin:0 8px 8px}
- .toolbar{padding:0 8px}
- .settings-modal{width:100vw;height:100vh;border-radius:0}
+ /* Sidebar becomes an overlay drawer (closed by default on mobile, closes on chat pick). */
+ .sidebar{position:fixed;left:0;top:0;bottom:0;z-index:60;width:min(300px,84vw);box-shadow:var(--shadow-2,0 12px 40px #000a)}
+ .drawer-backdrop{position:fixed;inset:0;z-index:50;background:#0008}
+ /* Chat tabs are a desktop concept; switching happens via the drawer. */
+ .tab-strip{display:none}
+ /* Toolbar: one compact row, desktop-only controls (workspace/branch stubs, labels) hidden. */
+ .toolbar{height:46px;padding:0 6px}
+ .toolbar-left{gap:4px;min-width:0;flex:1;overflow:hidden}
+ .toolbar-left>span{display:none}
+ .toolbar-left b{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+ .toolbar-left i{display:none}
+ .branch-link,.branch-select{display:none}
+ .toolbar-right{gap:0}
+ .toolbar-right .icon-btn,.toolbar-left .icon-btn{width:32px;height:32px}
+ .private-label{display:none}
+ /* Conversation uses the full width. */
+ .message-list{width:100%;padding:14px 12px 12px}
+ .message{gap:9px;margin-bottom:18px}
+ .message-avatar{width:24px;height:24px}
+ .message.assistant .message-content{padding:10px 12px}
+ .usage-line{margin:-8px 0 14px}
+ .scroll-bottom{right:14px;bottom:104px}
+ /* Welcome screen stacks. */
+ .welcome{padding:20px 16px 24px}
+ .welcome h1{font-size:22px;letter-spacing:-.5px}
+ .suggestions{grid-template-columns:1fr}
+ /* Composer fills the width. */
+ .composer-area{width:100%;padding:0 8px 8px}
+ .model-picker select{max-width:104px}
+ .send-area small{display:none}
+ /* Modals go fullscreen; settings nav becomes a horizontal strip. */
+ .modal-backdrop{inset:0;padding:0}
+ .settings-modal{width:100vw;height:100vh;height:100dvh;border-radius:0;border:0}
+ .settings-layout{flex-direction:column}
+ .settings-nav{width:100%;flex:none;display:flex;gap:2px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line);padding:8px}
+ .settings-nav button{width:auto;flex:none;height:32px;white-space:nowrap}
+ .settings-nav button span{margin:0}
+ .settings-page{padding:16px 14px}
+ .provider-grid{grid-template-columns:repeat(2,1fr)}
+ .modal,.confirm-modal,.palette-modal{width:calc(100vw - 28px);max-height:85vh;max-height:85dvh}
+ /* Side panels (tasks/docs/activity) slide in as bottom sheets. */
+ .side-panel{position:fixed;left:0;right:0;bottom:0;top:auto;width:100%;max-height:62vh;border-left:0;border-top:1px solid var(--line);z-index:40}
+ /* No hover on touch: row actions must be reachable. */
+ .chat-actions{display:flex}
 }

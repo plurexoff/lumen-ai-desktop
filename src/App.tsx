@@ -709,7 +709,7 @@ export default function App(){
    if(nc)openChat(nc);
   }
  },[openTabs,openChat]);
- const newChatAndFocus=useCallback(()=>{void newChat().then(()=>input.current?.focus());},[newChat]);
+ const newChatAndFocus=useCallback(()=>{if(isMobile)setShowSidebar(false);void newChat().then(()=>input.current?.focus());},[newChat]);
  const pickSuggestion=useCallback((t:string)=>{setDraft(t);input.current?.focus();},[]);
 
  // ---- stream batching: main sends a chunk per token; accumulate and flush on rAF
@@ -905,6 +905,7 @@ export default function App(){
      onTogglePin={togglePin} onMoveFolder={moveToFolder} onToggleArchived={toggleArchived} onSetTags={setTags}
      onCreateFolder={createFolder} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder}
      onOpenHit={openChatAt}/>}
+   {isMobile&&showSidebar&&!focusMode&&<div className="drawer-backdrop" onClick={()=>setShowSidebar(false)}/>}
    <main className="main-panel">
     {openTabs.length>0&&!focusMode&&<div className="tab-strip" role="tablist" aria-label="Open conversations">
      {openTabs.map(id=>{const c=chats.find(x=>x.id===id);if(!c)return null;
