@@ -589,8 +589,8 @@ export async function webFetch(url: string, approve: ApproveFn): Promise<string>
 // USER's data files, not the app database); CSV gets a tiny in-memory table.
 
 // The WASM file ships in node_modules; its path relative to this compiled file
-// differs between build layouts (dist-electron/, dist-cli/electron/), so walk up
-// from __dirname until node_modules/sql.js/dist is found.
+// depends on the build layout, so walk up from __dirname until
+// node_modules/sql.js/dist is found.
 function sqlJsDistDir(): string {
  let dir = __dirname;
  for (let i = 0; i < 8; i++) {

@@ -1,7 +1,8 @@
 import {useEffect,useMemo,useState} from 'react';
 import type {DragEvent} from 'react';
-import {Archive,ArchiveRestore,Check,ChevronDown,ChevronRight,Folder as FolderIcon,FolderPlus,Loader2,MessageSquare,MoreHorizontal,Pencil,Pin,PinOff,Plus,Search,SlidersHorizontal,Tag,Trash2,X,Zap} from 'lucide-react';
+import {Archive,ArchiveRestore,Check,ChevronDown,Folder as FolderIcon,FolderPlus,Loader2,MessageSquare,MoreHorizontal,Pencil,Pin,PinOff,Plus,Search,SlidersHorizontal,Tag,Trash2,X,Zap} from 'lucide-react';
 import type {Chat,Folder,ProviderConfig,SearchFilters,SearchResult} from '../../electron/shared';
+import {t,useT} from '../i18n';
 
 interface Props{
  chats:Chat[];
@@ -37,13 +38,14 @@ function groupLabel(updatedAt:number):string{
  const d=new Date(updatedAt),now=new Date();
  const startOf=(x:Date)=>new Date(x.getFullYear(),x.getMonth(),x.getDate()).getTime();
  const days=Math.round((startOf(now)-startOf(d))/86400000);
- if(days<=0)return 'Today';
- if(days===1)return 'Yesterday';
- if(days<7)return 'Last 7 days';
- return 'Earlier';
+ if(days<=0)return t('sidebar.group.today');
+ if(days===1)return t('sidebar.group.yesterday');
+ if(days<7)return t('sidebar.group.last7');
+ return t('sidebar.group.earlier');
 }
 
 export default function Sidebar({chats,activeId,providers,folders,busyIds,unread,needsSetup,newChatHotkey,onNew,onOpen,onDelete,onRename,onOpenSettings,onTogglePin,onMoveFolder,onToggleArchived,onSetTags,onCreateFolder,onRenameFolder,onDeleteFolder,onOpenHit}:Props){
+ const t=useT();
  const [query,setQuery]=useState('');
  const [hits,setHits]=useState<SearchHit[]>([]);
  const [searching,setSearching]=useState(false);
@@ -174,24 +176,24 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,unread
     ?<span className="chat-rename"><input autoFocus value={renameValue} onChange={e=>setRenameValue(e.target.value)}
       onBlur={commitRename}
       onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();commitRename();}if(e.key==='Escape')setRenamingId(null);}}/>
-      <button className="rename-ok" aria-label="Save name" onMouseDown={e=>e.preventDefault()} onClick={commitRename}><Check size={13}/></button></span>
+      <button className="rename-ok" aria-label={t('sidebar.saveName')} onMouseDown={e=>e.preventDefault()} onClick={commitRename}><Check size={13}/></button></span>
     :<>
      <button className="chat-name" onDoubleClick={()=>startRename(c)} onClick={()=>onOpen(c)} title={c.title}>
       {busyIds.has(c.id)?<Loader2 size={14} className="spin"/>:<MessageSquare size={14}/>}<span>{c.title}</span>
-      {unread.has(c.id)&&<i className="unread-dot" aria-label="New reply"/>}
+      {unread.has(c.id)&&<i className="unread-dot" aria-label={t('sidebar.newReply')}/>}
      </button>
-     {!!c.tags?.length&&<span className="chat-tags">{c.tags.map(t=><button key={t} className="tag-chip" title={'Search tag: '+t} onClick={()=>{setQuery('');setFTag(t);setShowFilters(true);setShowResults(true);}}>{t}</button>)}</span>}
+     {!!c.tags?.length&&<span className="chat-tags">{c.tags.map(tag=><button key={tag} className="tag-chip" title={t('sidebar.searchTag',{tag})} onClick={()=>{setQuery('');setFTag(tag);setShowFilters(true);setShowResults(true);}}>{tag}</button>)}</span>}
      {tagEditId===c.id
-      ?<span className="chat-rename"><input autoFocus value={tagValue} placeholder="tags, comma separated" aria-label="Edit tags"
+      ?<span className="chat-rename"><input autoFocus value={tagValue} placeholder={t('sidebar.tags.placeholder')} aria-label={t('sidebar.tags.edit')}
         onChange={e=>setTagValue(e.target.value)} onBlur={commitTagEdit}
         onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();commitTagEdit();}if(e.key==='Escape')setTagEditId(null);}}/>
-        <button className="rename-ok" aria-label="Save tags" onMouseDown={e=>e.preventDefault()} onClick={commitTagEdit}><Check size={13}/></button></span>
+        <button className="rename-ok" aria-label={t('sidebar.tags.save')} onMouseDown={e=>e.preventDefault()} onClick={commitTagEdit}><Check size={13}/></button></span>
       :<span className="chat-actions">
-       <button aria-label={(c.pinned?'Unpin ':'Pin ')+c.title} title={c.pinned?'Unpin':'Pin to top'} onClick={()=>onTogglePin(c)}>{c.pinned?<PinOff size={12}/>:<Pin size={12}/>}</button>
-       <button aria-label={'Edit tags of '+c.title} title="Tags (comma separated)" onClick={()=>startTagEdit(c)}><Tag size={12}/></button>
-       <button aria-label={(c.archived?'Unarchive ':'Archive ')+c.title} title={c.archived?'Unarchive':'Archive'} onClick={()=>onToggleArchived(c)}>{c.archived?<ArchiveRestore size={12}/>:<Archive size={12}/>}</button>
-       <button aria-label={'Rename '+c.title} title="Rename (double-click)" onClick={()=>startRename(c)}><Pencil size={12}/></button>
-       <button aria-label={'Delete '+c.title} title="Delete" onClick={()=>setPendingDelete(c)}><Trash2 size={13}/></button>
+       <button aria-label={t(c.pinned?'sidebar.unpin':'sidebar.pin',{title:c.title})} title={t(c.pinned?'sidebar.unpin.title':'sidebar.pin.title')} onClick={()=>onTogglePin(c)}>{c.pinned?<PinOff size={12}/>:<Pin size={12}/>}</button>
+       <button aria-label={t('sidebar.tags.editOf',{title:c.title})} title={t('sidebar.tags.title')} onClick={()=>startTagEdit(c)}><Tag size={12}/></button>
+       <button aria-label={t(c.archived?'sidebar.unarchive':'sidebar.archive',{title:c.title})} title={t(c.archived?'sidebar.unarchive.title':'sidebar.archive.title')} onClick={()=>onToggleArchived(c)}>{c.archived?<ArchiveRestore size={12}/>:<Archive size={12}/>}</button>
+       <button aria-label={t('sidebar.rename',{title:c.title})} title={t('sidebar.rename.title')} onClick={()=>startRename(c)}><Pencil size={12}/></button>
+       <button aria-label={t('sidebar.delete',{title:c.title})} title={t('sidebar.delete.title')} onClick={()=>setPendingDelete(c)}><Trash2 size={13}/></button>
       </span>}
     </>}
   </div>;
@@ -200,31 +202,34 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,unread
  return <>
  <aside className="sidebar">
   <div className="workspace"><div className="workspace-logo">L</div><div><b>Lumen</b><small>Personal workspace</small></div><ChevronDown size={14}/></div>
-  <button className="new-chat" onClick={onNew}><Plus size={16}/>New conversation<kbd>{newChatHotkey}</kbd></button>
+  <button className="new-chat" onClick={onNew}><Plus size={16}/>{t('sidebar.newConversation')}<kbd>{newChatHotkey}</kbd></button>
   <label className="search-box"><Search size={14}/>
-   <input value={query} onChange={e=>{setQuery(e.target.value);setShowResults(true);}} onFocus={()=>setShowResults(true)} placeholder="Search conversations" aria-label="Search conversations"/>
-   <button type="button" className={'filter-toggle'+(showFilters||hasFilters?' active':'')} aria-label="Search filters" title="Filter by model, role, folder, tag, date" onClick={()=>setShowFilters(v=>!v)}><SlidersHorizontal size={12}/></button>
-   {query&&<button type="button" aria-label="Clear search" onClick={()=>{setQuery('');setHits([]);}}><X size={12}/></button>}
+   <input value={query} onChange={e=>{setQuery(e.target.value);setShowResults(true);}} onFocus={()=>setShowResults(true)} placeholder={t('sidebar.search.placeholder')} aria-label={t('sidebar.search.placeholder')}/>
+   <button type="button" className={'filter-toggle'+(showFilters||hasFilters?' active':'')} aria-label={t('sidebar.filters.aria')} title={t('sidebar.filters.title')} onClick={()=>setShowFilters(v=>!v)}><SlidersHorizontal size={12}/></button>
+   {query&&<button type="button" aria-label={t('sidebar.search.clear')} onClick={()=>{setQuery('');setHits([]);}}><X size={12}/></button>}
   </label>
   {showFilters&&<div className="search-filters">
-   <select value={fModel} onChange={e=>setFModel(e.target.value)} aria-label="Filter by model"><option value="">Any model</option>{allModels.map(m=><option key={m} value={m}>{m}</option>)}</select>
-   <select value={fRole} onChange={e=>setFRole(e.target.value)} aria-label="Filter by role"><option value="">Any role</option><option value="user">My messages</option><option value="assistant">Replies</option></select>
-   <select value={fFolder} onChange={e=>setFFolder(e.target.value)} aria-label="Filter by folder"><option value="">Any folder</option>{folders.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}</select>
-   <input list="lumen-tags" value={fTag} onChange={e=>setFTag(e.target.value)} placeholder="Tag" aria-label="Filter by tag"/>
+   <select value={fModel} onChange={e=>setFModel(e.target.value)} aria-label={t('sidebar.filter.model.aria')}><option value="">{t('sidebar.filter.model.any')}</option>{allModels.map(m=><option key={m} value={m}>{m}</option>)}</select>
+   <select value={fRole} onChange={e=>setFRole(e.target.value)} aria-label={t('sidebar.filter.role.aria')}><option value="">{t('sidebar.filter.role.any')}</option><option value="user">{t('sidebar.filter.role.user')}</option><option value="assistant">{t('sidebar.filter.role.assistant')}</option></select>
+   <select value={fFolder} onChange={e=>setFFolder(e.target.value)} aria-label={t('sidebar.filter.folder.aria')}><option value="">{t('sidebar.filter.folder.any')}</option>{folders.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}</select>
+   <input list="lumen-tags" value={fTag} onChange={e=>setFTag(e.target.value)} placeholder={t('sidebar.filter.tag.placeholder')} aria-label={t('sidebar.filter.tag.aria')}/>
    <datalist id="lumen-tags">{allTags.map(t=><option key={t} value={t}/>)}</datalist>
    <div className="filter-dates">
-    <input type="date" value={fFrom} onChange={e=>setFFrom(e.target.value)} aria-label="From date"/>
-    <input type="date" value={fTo} onChange={e=>setFTo(e.target.value)} aria-label="To date"/>
+    <input type="date" value={fFrom} onChange={e=>setFFrom(e.target.value)} aria-label={t('sidebar.filter.from')}/>
+    <input type="date" value={fTo} onChange={e=>setFTo(e.target.value)} aria-label={t('sidebar.filter.to')}/>
    </div>
-   {hasFilters&&<button className="filter-clear" onClick={()=>{setFModel('');setFRole('');setFFolder('');setFTag('');setFFrom('');setFTo('');}}>Clear filters</button>}
+   {hasFilters&&<button className="filter-clear" onClick={()=>{setFModel('');setFRole('');setFFolder('');setFTag('');setFFrom('');setFTo('');}}>{t('sidebar.filter.clear')}</button>}
   </div>}
   {!showResults||(!query.trim()&&!hasFilters)?<>
-   <div className="section-label">WORKSPACE</div>
-   <button className="nav-link active"><MessageSquare size={15}/>Conversations<span>{visibleChats.length}</span></button>
-   <button className="nav-link" onClick={onOpenSettings}><Zap size={15}/>Providers & settings<span>{providers.length}</span></button>
+   <div className="section-label">{t('sidebar.section.workspace')}</div>
+   <button className="nav-link active"><MessageSquare size={15}/>{t('sidebar.nav.conversations')}<span>{visibleChats.length}</span></button>
+   <button className="nav-link" onClick={onOpenSettings}><Zap size={15}/>{t('sidebar.nav.providers')}<span>{providers.length}</span></button>
    <div className="chat-list">
+    {/* First paint: the built-in providers arrive with the initial load, so an
+        empty provider list means "still loading" — show shimmer rows (batch 8). */}
+    {!providers.length&&<div className="skel-list" aria-hidden="true">{[0,1,2,3,4].map(i=><div className="skel-row" key={i} style={{animationDelay:i*90+'ms'}}/>)}</div>}
     {!!pinnedChats.length&&<>
-     <div className="section-label group-label">PINNED</div>
+     <div className="section-label group-label">{t('sidebar.section.pinned')}</div>
      {pinnedChats.map(chatRow)}
     </>}
     {folders.map(f=>{
@@ -235,26 +240,31 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,unread
        ?<span className="chat-rename folder-rename"><input autoFocus value={folderValue} onChange={e=>setFolderValue(e.target.value)}
          onBlur={commitFolderEdit}
          onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();commitFolderEdit();}if(e.key==='Escape')setFolderEdit(null);}}/>
-         <button className="rename-ok" aria-label="Save folder name" onMouseDown={e=>e.preventDefault()} onClick={commitFolderEdit}><Check size={13}/></button></span>
+         <button className="rename-ok" aria-label={t('sidebar.folder.saveName')} onMouseDown={e=>e.preventDefault()} onClick={commitFolderEdit}><Check size={13}/></button></span>
        :<div className="folder-header" onDragOver={allowDrop(f.id)} onDragLeave={()=>setDropTarget(t=>t===f.id?null:t)} onDrop={e=>dropOn(e,f.id,f.id)}>
-        <button className="folder-toggle" onClick={()=>toggleCollapsed(f.id)} aria-label={(isOpen?'Collapse ':'Expand ')+f.name}>
-         {isOpen?<ChevronDown size={13}/>:<ChevronRight size={13}/>}<FolderIcon size={13}/><span>{f.name}</span><i>{list.length}</i>
+        {/* Double-click the folder name starts an inline rename (the pencil button
+            in the hover actions does the same) — batch 9 discoverability fix. */}
+        <button className="folder-toggle" onClick={()=>toggleCollapsed(f.id)} onDoubleClick={()=>{setFolderEdit(f.id);setFolderValue(f.name);}} aria-label={t(isOpen?'sidebar.folder.collapse':'sidebar.folder.expand',{name:f.name})} title={f.name}>
+         <ChevronDown size={13} className={'chevron'+(isOpen?'':' closed')}/><FolderIcon size={13}/><span>{f.name}</span><i>{list.length}</i>
         </button>
         <span className="chat-actions">
-         <button aria-label={'Rename folder '+f.name} title="Rename folder" onClick={()=>{setFolderEdit(f.id);setFolderValue(f.name);}}><Pencil size={11}/></button>
-         <button aria-label={'Delete folder '+f.name} title="Delete folder (chats are kept)" onClick={()=>setPendingFolderDelete(f)}><Trash2 size={12}/></button>
+         <button aria-label={t('sidebar.folder.rename',{name:f.name})} title={t('sidebar.folder.rename.title')} onClick={()=>{setFolderEdit(f.id);setFolderValue(f.name);}}><Pencil size={11}/></button>
+         <button aria-label={t('sidebar.folder.delete',{name:f.name})} title={t('sidebar.folder.delete.title')} onClick={()=>setPendingFolderDelete(f)}><Trash2 size={12}/></button>
         </span>
        </div>}
-      {isOpen&&list.map(chatRow)}
-      {isOpen&&!list.length&&<div className="folder-empty">Drag conversations here</div>}
+      {/* Height-animated open/close (grid-rows 0fr→1fr trick, batch 8). */}
+      <div className={'folder-body'+(isOpen?' open':'')}><div>
+       {list.map(chatRow)}
+       {!list.length&&<div className="folder-empty">{t('sidebar.folder.empty')}</div>}
+      </div></div>
      </div>;
     })}
     {addingFolder
-     ?<span className="chat-rename folder-rename"><input autoFocus value={newFolderName} placeholder="Folder name" aria-label="New folder name"
+     ?<span className="chat-rename folder-rename"><input autoFocus value={newFolderName} placeholder={t('sidebar.folder.name.placeholder')} aria-label={t('sidebar.folder.name.aria')}
        onChange={e=>setNewFolderName(e.target.value)} onBlur={commitNewFolder}
        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();commitNewFolder();}if(e.key==='Escape'){setAddingFolder(false);setNewFolderName('');}}}/>
-       <button className="rename-ok" aria-label="Create folder" onMouseDown={e=>e.preventDefault()} onClick={commitNewFolder}><Check size={13}/></button></span>
-     :<button className="folder-add" onClick={()=>setAddingFolder(true)}><FolderPlus size={13}/>New folder</button>}
+       <button className="rename-ok" aria-label={t('sidebar.folder.create')} onMouseDown={e=>e.preventDefault()} onClick={commitNewFolder}><Check size={13}/></button></span>
+     :<button className="folder-add" onClick={()=>setAddingFolder(true)}><FolderPlus size={13}/>{t('sidebar.folder.new')}</button>}
     <div className={dropTarget==='__root'?'drop-target-root':''} onDragOver={allowDrop('__root')} onDragLeave={()=>setDropTarget(t=>t==='__root'?null:t)} onDrop={e=>dropOn(e,null,'__root')}>
      {Object.entries(ungrouped).map(([label,list])=><div key={label}>
       <div className="section-label group-label">{label}</div>
@@ -263,52 +273,52 @@ export default function Sidebar({chats,activeId,providers,folders,busyIds,unread
     </div>
     {!!archivedChats.length&&<div className="archived-section">
      <button className="folder-toggle archived-toggle" onClick={()=>setShowArchived(v=>!v)} aria-expanded={showArchived}>
-      {showArchived?<ChevronDown size={13}/>:<ChevronRight size={13}/>}<Archive size={13}/><span>Archived</span><i>{archivedChats.length}</i>
+      <ChevronDown size={13} className={'chevron'+(showArchived?'':' closed')}/><Archive size={13}/><span>{t('sidebar.archived')}</span><i>{archivedChats.length}</i>
      </button>
-     {showArchived&&archivedChats.map(chatRow)}
+     <div className={'folder-body'+(showArchived?' open':'')}><div>{archivedChats.map(chatRow)}</div></div>
     </div>}
    </div>
   </>:<div className="chat-list">
    {!!titleMatches.length&&<>
-    <div className="section-label group-label">CONVERSATIONS</div>
+    <div className="section-label group-label">{t('sidebar.section.conversations')}</div>
     {titleMatches.map(c=><div className={'chat-row '+(c.id===activeId?'selected':'')} key={c.id}>
      <button className="chat-name" onClick={()=>onOpen(c)} title={c.title}>
       {busyIds.has(c.id)?<Loader2 size={14} className="spin"/>:<MessageSquare size={14}/>}<span>{c.title}</span>
      </button>
     </div>)}
    </>}
-   <div className="section-label group-label">IN MESSAGES{searching?' · SEARCHING…':''}</div>
-   {!searching&&!contentHits.length&&<div className="models-empty">No matches inside conversations</div>}
+   <div className="section-label group-label">{t('sidebar.section.inMessages')}{searching?' · '+t('sidebar.section.searching'):''}</div>
+   {!searching&&!contentHits.length&&<div className="models-empty">{t('sidebar.search.noMatches')}</div>}
    {/* Message hits jump straight to the matched message and highlight it. */}
    {contentHits.map(h=><div className="chat-row" key={h.messageId}>
     <button className="chat-name" onClick={()=>onOpenHit(h.chatId,h.messageId)}>
      <Search size={13}/><span className="hit-text"><b>{h.title}</b><small>{h.snippet}</small>
-      <small className="hit-meta">{h.role==='user'?'You':'Lumen'}{h.model?' · '+h.model:''} · {new Date(h.createdAt).toLocaleDateString()}</small></span>
+      <small className="hit-meta">{h.role==='user'?t('sidebar.you'):'Lumen'}{h.model?' · '+h.model:''} · {new Date(h.createdAt).toLocaleDateString()}</small></span>
     </button>
    </div>)}
   </div>}
   <div className="sidebar-bottom">
-   {needsSetup&&<div className="connect-card"><Zap size={15}/><div><b>Bring your own AI</b><small>Connect a provider to begin</small></div><button onClick={onOpenSettings}>Setup</button></div>}
-   <button className="profile" onClick={onOpenSettings}><div className="avatar">L</div><div><b>Local workspace</b><small>Settings & preferences</small></div><MoreHorizontal size={16}/></button>
+   {needsSetup&&<div className="connect-card"><Zap size={15}/><div><b>{t('sidebar.connect.title')}</b><small>{t('sidebar.connect.sub')}</small></div><button onClick={onOpenSettings}>{t('sidebar.connect.button')}</button></div>}
+   <button className="profile" onClick={onOpenSettings}><div className="avatar">L</div><div><b>{t('sidebar.profile.title')}</b><small>{t('sidebar.profile.sub')}</small></div><MoreHorizontal size={16}/></button>
   </div>
  </aside>
  {pendingDelete&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setPendingDelete(null);}}>
-  <section className="confirm-modal" role="dialog" aria-modal="true" aria-label="Delete conversation">
-   <h3>Delete conversation?</h3>
-   <p>“{pendingDelete.title}” and all of its messages will be permanently removed.</p>
+  <section className="confirm-modal" role="dialog" aria-modal="true" aria-label={t('sidebar.deleteChat.aria')}>
+   <h3>{t('sidebar.deleteChat.title')}</h3>
+   <p>{t('sidebar.deleteChat.body',{title:pendingDelete.title})}</p>
    <div className="settings-actions">
-    <button className="secondary-button" onClick={()=>setPendingDelete(null)}>Cancel</button>
-    <button className="danger-button" onClick={()=>{const chat=pendingDelete;setPendingDelete(null);onDelete(chat);}}>Delete</button>
+    <button className="secondary-button" onClick={()=>setPendingDelete(null)}>{t('sidebar.cancel')}</button>
+    <button className="danger-button" onClick={()=>{const chat=pendingDelete;setPendingDelete(null);onDelete(chat);}}>{t('sidebar.delete.title')}</button>
    </div>
   </section>
  </div>}
  {pendingFolderDelete&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setPendingFolderDelete(null);}}>
-  <section className="confirm-modal" role="dialog" aria-modal="true" aria-label="Delete folder">
-   <h3>Delete folder?</h3>
-   <p>“{pendingFolderDelete.name}” will be removed. Its conversations are kept and move back to the main list.</p>
+  <section className="confirm-modal" role="dialog" aria-modal="true" aria-label={t('sidebar.deleteFolder.aria')}>
+   <h3>{t('sidebar.deleteFolder.title')}</h3>
+   <p>{t('sidebar.deleteFolder.body',{name:pendingFolderDelete.name})}</p>
    <div className="settings-actions">
-    <button className="secondary-button" onClick={()=>setPendingFolderDelete(null)}>Cancel</button>
-    <button className="danger-button" onClick={()=>{const f=pendingFolderDelete;setPendingFolderDelete(null);onDeleteFolder(f.id);}}>Delete folder</button>
+    <button className="secondary-button" onClick={()=>setPendingFolderDelete(null)}>{t('sidebar.cancel')}</button>
+    <button className="danger-button" onClick={()=>{const f=pendingFolderDelete;setPendingFolderDelete(null);onDeleteFolder(f.id);}}>{t('sidebar.deleteFolder.button')}</button>
    </div>
   </section>
  </div>}

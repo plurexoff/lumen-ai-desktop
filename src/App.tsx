@@ -4,7 +4,6 @@ import {useApp} from './store';
 import type {PendingImage,Prefs,State,StreamState} from './store';
 import type {Chat,ChatChunk,ChatDoc,CompareAnswer,FileOp,Folder,Message,MessageVariant,ProviderConfig,ProviderId,TodoItem} from '../electron/shared';
 import {IMAGE_MIMES,isCustomProviderId,MAX_ATTACHMENT_BYTES,MAX_IMAGE_ATTACHMENTS} from '../electron/shared';
-import {isMobile} from './platform/detect';
 import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
 import Welcome from './components/Welcome';
@@ -12,6 +11,7 @@ import MessageList from './components/MessageList';
 import Composer from './components/Composer';
 import SettingsModal from './components/SettingsModal';
 import {renderMarkdown} from './markdown';
+import {useT} from './i18n';
 
 type Tab='providers'|'appearance'|'agents'|'data'|'stats';
 // Request params are taken from preferences; `theme` is deliberately not forwarded.
@@ -50,8 +50,9 @@ export default function App(){
  const providerId=useApp(s=>s.providerId);
  const model=useApp(s=>s.model);
  const set=useApp(s=>s.set);
+ const t=useT();
  const [showSettings,setShowSettings]=useState(false);
- const [showSidebar,setShowSidebar]=useState(()=>!isMobile);
+ const [showSidebar,setShowSidebar]=useState(true);
  const [tab,setTab]=useState<Tab>('providers');
  const [draft,setDraft]=useState('');
  const [images,setImagesState]=useState<PendingImage[]>([]);
@@ -71,6 +72,9 @@ export default function App(){
  // exit. main.ts tracks it (db.persistError) but nothing ever asked — surface it.
  const [persistError,setPersistError]=useState('');
  const input=useRef<HTMLTextAreaElement>(null),bottom=useRef<HTMLDivElement>(null),conversation=useRef<HTMLElement>(null);
+ // Reading-progress hairline and the minimap viewport rectangle — both are driven
+ // by refs in onScroll (no React re-render per scroll event).
+ const progressRef=useRef<HTMLElement>(null),miniViewRef=useRef<HTMLElement>(null);
  const noticeTimer=useRef<ReturnType<typeof setTimeout>>();
  // draftRef lets send() read the current text without depending on `draft`, so its
  // identity stays stable and memoized children do not re-render while typing.
@@ -160,7 +164,7 @@ export default function App(){
   // Give the staged images back too — main persisted nothing, so the user should
   // not have to re-attach them after a rejected send.
   if(restore?.length&&!imagesRef.current.length)setImages(restore);
-  set({streams:next,messages,errors:{...s.errors,[chatId]:e instanceof Error?e.message:'Generation failed'}});
+  set({streams:next,messages,errors:{...s.errors,[chatId]:e instanceof Error?e.message:t('app.generationFailed')}});
  },[set]);
 
  // Ask main whether the last disk flush succeeded. Checked on load and after every
@@ -168,7 +172,7 @@ export default function App(){
  // Returns the error so callers can act on it immediately — the state setter is async,
  // so reading `persistError` straight after calling this would see the previous value.
  const checkHealth=useCallback(async()=>{
-  try{const h=await window.lumen.data.health();const err=h.ok?'':(h.persistError??'Could not write the database file');setPersistError(err);return err;}catch{return '';}
+  try{const h=await window.lumen.data.health();const err=h.ok?'':(h.persistError??t('app.dbWriteFailed'));setPersistError(err);return err;}catch{return '';}
  },[]);
 
  // Re-fetch variants only for messages whose History panel is currently loaded, so an
@@ -210,7 +214,7 @@ export default function App(){
     if(chat){patch.providerId=chat.providerId;patch.model=chat.model;}
    }
    set(patch);
-  }catch{flash('Could not reload the conversation');}
+  }catch{flash(t('app.reloadFailed'));}
   void checkHealth();
  },[checkHealth,flash,refreshOpenVariants,set]);
 
@@ -228,21 +232,21 @@ export default function App(){
    // A generation is running in this chat: queue the text and let the queue-flush
    // effect send it when the reply settles. Images can't be queued — they stage in
    // the composer and would be stranded, so keep them out for now.
-   if(atts.length){flash('Wait for the current reply before attaching images');return;}
+   if(atts.length){flash(t('app.waitBeforeAttach'));return;}
    if(!content)return;
    const q=queuesRef.current[chatId]??[];
-   if(q.length>=10){flash('Queue is full — wait for the current reply');return;}
+   if(q.length>=10){flash(t('app.queueFull'));return;}
    const next={...queuesRef.current,[chatId]:[...q,content]};
    queuesRef.current=next;setQueues(next);
    if(text===undefined)setDraft('');
-   flash('Queued — sends when the reply finishes');
+   flash(t('app.queued'));
    return;
   }
   // A selected persona overrides the prompt and (when pinned) provider/model/temp.
   const persona=s.settings.personas.find(p=>p.id===s.settings.personaId);
   const effProvider=persona?.providerId??s.providerId;
   const effModel=persona?.model??s.model;
-  if(!effModel){flash('Add or select a model for this provider in Settings');setShowSettings(true);setTab('providers');return;}
+  if(!effModel){flash(t('app.noModel'));setShowSettings(true);setTab('providers');return;}
   let id=chatId;
   if(!id){const c=await window.lumen.chats.create();id=c.id;set({chats:[c,...useApp.getState().chats],activeId:id,providerId:effProvider,model:effModel});}
   const requestId=crypto.randomUUID();
@@ -266,11 +270,11 @@ export default function App(){
 
  const addImages=useCallback((files:File[])=>{
   const ok=files.filter(f=>(IMAGE_MIMES as readonly string[]).includes(f.type));
-  if(ok.length<files.length)flash('Only PNG, JPEG, WebP or GIF images can be attached');
+  if(ok.length<files.length)flash(t('app.imagesOnly'));
   const room=MAX_IMAGE_ATTACHMENTS-imagesRef.current.length;
-  if(ok.length>room)flash(`At most ${MAX_IMAGE_ATTACHMENTS} images per message`);
+  if(ok.length>room)flash(t('app.maxImages',{n:MAX_IMAGE_ATTACHMENTS}));
   void Promise.all(ok.slice(0,Math.max(0,room)).map(async f=>{
-   if(f.size>MAX_ATTACHMENT_BYTES){flash(`"${f.name}" is over ${MAX_ATTACHMENT_BYTES/1048576} MB`);return null;}
+   if(f.size>MAX_ATTACHMENT_BYTES){flash(t('app.imageTooLarge',{name:f.name,mb:MAX_ATTACHMENT_BYTES/1048576}));return null;}
    const data=toBase64(await f.arrayBuffer());
    return {name:f.name,mime:f.type,size:f.size,data,preview:`data:${f.type};base64,${data}`} as PendingImage;
   })).then(list=>{const good=list.filter((x):x is PendingImage=>!!x);if(good.length)setImages([...imagesRef.current,...good]);});
@@ -280,14 +284,14 @@ export default function App(){
  // Fork the conversation at any message: main copies the history up to that point
  // (with variants and attachments) into a new chat, which we then open.
  const branchChat=useCallback(async(message:Message)=>{
-  if(useApp.getState().streams[message.chatId]){flash('Still generating — stop it first');return;}
+  if(useApp.getState().streams[message.chatId]){flash(t('app.stillGenerating'));return;}
   try{
    const chat=await window.lumen.chats.branch(message.chatId,message.id);
    set({chats:await window.lumen.chats.list(),activeId:chat.id,messages:[],providerId:chat.providerId,model:chat.model});
    setVariants({});
    await load(chat.id);
-   flash('Branched into a new conversation');
-  }catch(e){flash(e instanceof Error?e.message:'Could not branch the conversation');}
+   flash(t('app.branched'));
+  }catch(e){flash(e instanceof Error?e.message:t('app.branchFailed'));}
  },[flash,load,set]);
 
  const regenerate=useCallback(()=>{
@@ -311,9 +315,9 @@ export default function App(){
  // after, so a rejected send destroyed the conversation tail permanently.
  const commitEdit=useCallback(async(message:Message,text:string)=>{
   const s=useApp.getState();const chatId=message.chatId;
-  if(s.streams[chatId]){flash('Still generating — stop it first');return;}
+  if(s.streams[chatId]){flash(t('app.stillGenerating'));return;}
   const next=text.trim();if(!next)return;
-  if(!s.model){flash('Select a model before resending');setShowSettings(true);setTab('providers');return;}
+  if(!s.model){flash(t('app.selectModelResend'));setShowSettings(true);setTab('providers');return;}
   const requestId=crypto.randomUUID();
   beginStream(chatId,requestId);
   // Replace the edited row optimistically so the UI reflects the new text at once;
@@ -334,7 +338,7 @@ export default function App(){
 
  const loadVariants=useCallback(async(messageId:string)=>{
   try{const list=await window.lumen.chats.variants(messageId);setVariants(v=>({...v,[messageId]:list}));}
-  catch{flash('Could not load previous answers');}
+  catch{flash(t('app.loadVariantsFailed'));}
  },[flash]);
 
  const restoreVariant=useCallback(async(variantId:string)=>{
@@ -342,7 +346,7 @@ export default function App(){
    // The swap archived the outgoing answer and consumed this variant, so the open
    // panel's contents changed — re-fetch instead of blanking it.
    void refreshOpenVariants();}
-  catch(e){flash(e instanceof Error?e.message:'Could not restore that answer');}
+  catch(e){flash(e instanceof Error?e.message:t('app.restoreFailed'));}
  },[flash,refreshOpenVariants,set]);
 
  const newChat=useCallback(async()=>{
@@ -352,7 +356,6 @@ export default function App(){
  },[set]);
 
  const openChat=useCallback((chat:Chat)=>{
-  if(isMobile)setShowSidebar(false);
   setUnread(prev=>{if(!prev.has(chat.id))return prev;const n=new Set(prev);n.delete(chat.id);return n;});
   setOpenTabs(prev=>prev.includes(chat.id)?prev:[...prev.slice(-7),chat.id]);
   if(chat.id===useApp.getState().activeId)return;
@@ -422,8 +425,8 @@ export default function App(){
   const id=useApp.getState().activeId;if(!id)return;
   try{
    const updated=await window.lumen.chats.pickWorkspace(id);
-   if(updated){set({chats:useApp.getState().chats.map(c=>c.id===id?updated:c)});flash('Workspace: '+updated.workspace);}
-  }catch(e){flash(e instanceof Error?e.message:'Could not set the workspace');}
+   if(updated){set({chats:useApp.getState().chats.map(c=>c.id===id?updated:c)});flash(t('app.workspaceSet',{path:updated.workspace??''}));}
+  }catch(e){flash(e instanceof Error?e.message:t('app.workspaceFailed'));}
  },[flash,set]);
 
  const clearWorkspace=useCallback(async()=>{
@@ -446,7 +449,7 @@ export default function App(){
   const s=useApp.getState();const chat=s.chats.find(c=>c.id===s.activeId);if(!chat)return;
   await window.lumen.chats.setReadonly(chat.id,!chat.workspaceReadonly);
   set({chats:s.chats.map(c=>c.id===chat.id?{...c,workspaceReadonly:chat.workspaceReadonly?0:1}:c)});
-  flash(chat.workspaceReadonly?'Read-only mode off — writes will ask for approval':'Read-only mode on — the model cannot change files in this chat');
+  flash(chat.workspaceReadonly?t('app.readonlyOff'):t('app.readonlyOn'));
  },[flash,set]);
 
  const setTags=useCallback(async(chatId:string,tags:string[])=>{
@@ -467,17 +470,17 @@ export default function App(){
  // Zip export: markdown + JSON + attachments, packed by main via Compress-Archive.
  const exportZip=useCallback(async()=>{
   const id=useApp.getState().activeId;if(!id)return;
-  try{const p=await window.lumen.chats.exportZip(id);flash(p?'Saved to '+p:'Export cancelled');}
-  catch(e){flash(e instanceof Error?e.message:'Export failed');}
+  try{const p=await window.lumen.chats.exportZip(id);flash(p?t('app.savedTo',{path:p}):t('app.exportCancelled'));}
+  catch(e){flash(e instanceof Error?e.message:t('app.exportFailed'));}
  },[flash]);
 
  // Compare mode: replay the conversation on a second provider/model, side by side.
  const runCompare=useCallback(async()=>{
   const id=useApp.getState().activeId;if(!id||compareBusy)return;
-  if(!compareModel){flash('Pick a model to compare against');return;}
+  if(!compareModel){flash(t('app.pickCompareModel'));return;}
   setCompareBusy(true);setCompareAnswers(null);
   try{setCompareAnswers(await window.lumen.chats.compare(id,compareProvider,compareModel));}
-  catch(e){flash(e instanceof Error?e.message:'Compare failed');setCompareOpen(false);}
+  catch(e){flash(e instanceof Error?e.message:t('app.compareFailed'));setCompareOpen(false);}
   finally{setCompareBusy(false);}
  },[compareBusy,compareModel,compareProvider,flash]);
 
@@ -486,8 +489,8 @@ export default function App(){
   const id=useApp.getState().activeId;if(!id)return;
   try{
    const doc=await window.lumen.chats.attachDoc(id);
-   if(doc){setDocs(await window.lumen.chats.docs(id));flash('Attached '+doc.name);}
-  }catch(e){flash(e instanceof Error?e.message:'Could not attach the document');}
+   if(doc){setDocs(await window.lumen.chats.docs(id));flash(t('app.attached',{name:doc.name}));}
+  }catch(e){flash(e instanceof Error?e.message:t('app.attachFailed'));}
  },[flash]);
  const removeDoc=useCallback(async(docId:string)=>{
   try{await window.lumen.chats.removeDoc(docId);const id=useApp.getState().activeId;if(id)setDocs(await window.lumen.chats.docs(id));}catch{}
@@ -504,7 +507,7 @@ export default function App(){
   const id=useApp.getState().activeId;if(!id||summarizing)return;
   setSummarizing(true);
   try{setSummary(await window.lumen.chats.summarize(id));}
-  catch(e){flash(e instanceof Error?e.message:'Could not summarize this chat');}
+  catch(e){flash(e instanceof Error?e.message:t('app.summarizeFailed'));}
   finally{setSummarizing(false);}
  },[flash,summarizing]);
 
@@ -512,7 +515,7 @@ export default function App(){
   if(!summary)return;
   const text=summary;setSummary(null);
   await newChat();
-  setDraft('Here is the summary of our previous conversation. Continue from it:\n\n'+text);
+  setDraft(t('app.summaryIntro',{text}));
   input.current?.focus();
  },[summary,newChat]);
 
@@ -520,7 +523,7 @@ export default function App(){
  // renderer); main only saves the file or prints it.
  const buildChatHtml=useCallback((chat:Chat,msgs:Message[])=>{
   const esc=(s:string)=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const body=msgs.map(m=>'<section class="msg '+m.role+'"><header>'+(m.role==='user'?'You':esc(m.model??'Assistant'))+' <time>'+new Date(m.createdAt).toLocaleString()+'</time></header><div class="content">'+renderMarkdown(m.content)+'</div></section>').join('\n');
+  const body=msgs.map(m=>'<section class="msg '+m.role+'"><header>'+(m.role==='user'?t('app.you'):esc(m.model??t('app.assistant')))+' <time>'+new Date(m.createdAt).toLocaleString()+'</time></header><div class="content">'+renderMarkdown(m.content)+'</div></section>').join('\n');
   return '<!doctype html><html><head><meta charset="utf-8"><title>'+esc(chat.title)+'</title><style>'
    +'body{font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;color:#1c1c1e;background:#fff}'
    +'h1{font-size:22px}.msg{margin:18px 0;padding:14px 16px;border-radius:12px;background:#f5f5f7}.msg.user{background:#e8f0fe}'
@@ -532,8 +535,8 @@ export default function App(){
 
  const exportPrepared=useCallback(async(format:'html'|'pdf')=>{
   const s=useApp.getState();const chat=s.chats.find(c=>c.id===s.activeId);if(!chat||!s.messages.length)return;
-  try{const path=await window.lumen.chats.exportPrepared(chat.id,format,buildChatHtml(chat,s.messages));flash(path?'Saved to '+path:'Export cancelled');}
-  catch(e){flash(e instanceof Error?e.message:'Export failed');}
+  try{const path=await window.lumen.chats.exportPrepared(chat.id,format,buildChatHtml(chat,s.messages));flash(path?t('app.savedTo',{path}):t('app.exportCancelled'));}
+  catch(e){flash(e instanceof Error?e.message:t('app.exportFailed'));}
  },[buildChatHtml,flash]);
 
  // Slash commands: /model X, /persona Y, /clear, /template N, /summarize, /readonly.
@@ -545,24 +548,24 @@ export default function App(){
    case 'model':{
     const p=s.providers.find(x=>x.id===s.providerId);
     const m=p?.models.find(x=>x.toLowerCase().includes(arg.toLowerCase()));
-    if(m){set({model:m});flash('Model → '+m);}else flash('Model "'+arg+'" not found for '+s.providerId);
+    if(m){set({model:m});flash(t('app.modelSet',{name:m}));}else flash(t('app.modelNotFound',{name:arg,provider:s.providerId}));
     return true;
    }
    case 'persona':{
     const persona=s.settings.personas.find(x=>x.name.toLowerCase().includes(arg.toLowerCase()));
-    if(persona||!arg){const id=persona?.id??'';set({settings:{...s.settings,personaId:id}});void window.lumen.settings.save({personaId:id});flash(persona?'Persona → '+persona.name:'Persona cleared');}
-    else flash('No persona named "'+arg+'"');
+    if(persona||!arg){const id=persona?.id??'';set({settings:{...s.settings,personaId:id}});void window.lumen.settings.save({personaId:id});flash(persona?t('app.personaSet',{name:persona.name}):t('app.personaCleared'));}
+    else flash(t('app.noPersona',{name:arg}));
     return true;
    }
    case 'template':{
-    const t=s.settings.templates[Number(arg)-1]??s.settings.templates.find(x=>x.name.toLowerCase().includes(arg.toLowerCase()));
-    if(t){setDraft(t.text.replace('{{input}}',''));input.current?.focus();}else flash('Template "'+arg+'" not found');
+    const tpl=s.settings.templates[Number(arg)-1]??s.settings.templates.find(x=>x.name.toLowerCase().includes(arg.toLowerCase()));
+    if(tpl){setDraft(tpl.text.replace('{{input}}',''));input.current?.focus();}else flash(t('app.templateNotFound',{name:arg}));
     return true;
    }
    case 'clear':void newChat();return true;
    case 'summarize':void runSummarize();return true;
    case 'readonly':void toggleReadonly();return true;
-   case 'help':flash('Commands: /model · /persona · /template N · /clear · /summarize · /readonly');return true;
+   case 'help':flash(t('app.commandList'));return true;
    default:return false;
   }
  },[flash,newChat,runSummarize,set,toggleReadonly]);
@@ -576,29 +579,29 @@ export default function App(){
   try{
    const r=await window.lumen.chats.rollbackOp(opId);flash(r.message);
    const id=useApp.getState().activeId;if(id)setFileOps(await window.lumen.chats.fileOps(id));
-  }catch(e){flash(e instanceof Error?e.message:'Rollback failed');}
+  }catch(e){flash(e instanceof Error?e.message:t('app.rollbackFailed'));}
  },[flash]);
 
  const pref=useCallback(async<K extends keyof Prefs>(key:K,value:Prefs[K])=>{
   const s=useApp.getState().settings;set({settings:{...s,[key]:value}});
-  try{await window.lumen.settings.save({[key]:value});}catch{flash('Could not save that preference');}
+  try{await window.lumen.settings.save({[key]:value});}catch{flash(t('app.prefSaveFailed'));}
  },[flash,set]);
 
  const saveProvider=useCallback(async(config:ProviderConfig,key?:string)=>{
   try{await window.lumen.providers.save(config,key);const updated=await window.lumen.providers.list();set({providers:updated});return updated.find(p=>p.id===config.id)??config;}
-  catch(e){flash(e instanceof Error?e.message:'Unable to save');return undefined;}
+  catch(e){flash(e instanceof Error?e.message:t('app.unableSave'));return undefined;}
  },[flash,set]);
 
  const removeProvider=useCallback(async(id:ProviderId)=>{
   try{await window.lumen.providers.remove(id);set({providers:await window.lumen.providers.list()});}
-  catch(e){flash(e instanceof Error?e.message:'Unable to remove');}
+  catch(e){flash(e instanceof Error?e.message:t('app.unableRemove'));}
  },[flash,set]);
 
  // Creates an empty custom endpoint ("custom-<hex>") and selects it; the user then
  // fills in the URL/key and presses Save like for any other provider.
  const createProvider=useCallback(async()=>{
   try{const created=await window.lumen.providers.create('');const updated=await window.lumen.providers.list();set({providers:updated,providerId:created.id,model:''});return created;}
-  catch(e){flash(e instanceof Error?e.message:'Unable to add a provider');return undefined;}
+  catch(e){flash(e instanceof Error?e.message:t('app.unableAddProvider'));return undefined;}
  },[flash,set]);
 
  const testProvider=useCallback(async()=>{const result=await window.lumen.providers.test(useApp.getState().providerId);flash(result.message);},[flash]);
@@ -614,12 +617,12 @@ export default function App(){
    const updated=await window.lumen.providers.list();set({providers:updated});
    const saved=updated.find(p=>p.id===st.providerId);
    if(saved&&!saved.models.includes(st.model))set({model:saved.models[0]??''});
-   flash(`Loaded ${fetched.length} model${fetched.length===1?'':'s'}`);
-  }catch(e){flash(e instanceof Error?e.message:'Could not load models');}
+   flash(fetched.length===1?t('app.loadedModelsOne',{n:fetched.length}):t('app.loadedModels',{n:fetched.length}));
+  }catch(e){flash(e instanceof Error?e.message:t('app.loadModelsFailed'));}
   finally{setRefreshingModels(false);}
  },[flash,set]);
 
- const copy=useCallback(async(text:string)=>{try{await navigator.clipboard.writeText(text);flash('Copied');}catch{flash('Copy failed');}},[flash]);
+ const copy=useCallback(async(text:string)=>{try{await navigator.clipboard.writeText(text);flash(t('app.copied'));}catch{flash(t('app.copyFailed'));}},[flash]);
 
  const changeProvider=useCallback((id:ProviderId)=>{
   set({providerId:id});const p=useApp.getState().providers.find(x=>x.id===id);if(p?.models[0])set({model:p.models[0]});
@@ -665,20 +668,40 @@ export default function App(){
   const persona=s.settings.personas.find(p=>p.id===s.settings.personaId);
   const effProvider=persona?.providerId??s.providerId;
   const effModel=persona?.model??s.model;
-  if(!effModel){flash('Add or select a model for this provider in Settings');throw new Error('No model selected');}
+  if(!effModel){flash(t('app.noModel'));throw new Error('No model selected');}
   try{return await window.lumen.prompt.enhance(text,effProvider,effModel);}
-  catch(e){flash(e instanceof Error?e.message:'Could not enhance the draft');throw e;}
+  catch(e){flash(e instanceof Error?e.message:t('app.enhanceFailed'));throw e;}
  },[flash]);
 
  const scrollToBottom=useCallback(()=>{
   const el=conversation.current;if(!el)return;el.scrollTo({top:el.scrollHeight,behavior:'smooth'});setAtBottom(true);
  },[]);
- const onScroll=useCallback(()=>{const el=conversation.current;if(el)setAtBottom(el.scrollHeight-el.scrollTop-el.clientHeight<160);},[]);
+ const onScroll=useCallback(()=>{
+  const el=conversation.current;if(!el)return;
+  setAtBottom(el.scrollHeight-el.scrollTop-el.clientHeight<160);
+  const range=el.scrollHeight-el.clientHeight;
+  if(progressRef.current)progressRef.current.style.transform='scaleX('+(range>0?el.scrollTop/range:1)+')';
+  if(miniViewRef.current&&el.scrollHeight>0){
+   miniViewRef.current.style.top=(el.scrollTop/el.scrollHeight*100)+'%';
+   miniViewRef.current.style.height=(el.clientHeight/el.scrollHeight*100)+'%';
+  }
+ },[]);
+
+ // Selection toolbar (batch 9): the quoted fragment lands in the composer as a
+ // markdown quote, optionally prefixed with an explain/translate instruction.
+ const quoteSelection=useCallback((text:string,mode:'quote'|'explain'|'translate')=>{
+  const quoted=text.split('\n').map(l=>'> '+l).join('\n');
+  const base=draftRef.current?draftRef.current+'\n\n':'';
+  const prefix=mode==='explain'?t('messages.quoteDraftExplain'):mode==='translate'?t('messages.quoteDraftTranslate'):'';
+  setDraft(base+(mode==='quote'?quoted+'\n\n':prefix+quoted));
+  const el=input.current;
+  if(el){el.focus();requestAnimationFrame(()=>{el.style.height='auto';el.style.height=Math.min(el.scrollHeight,140)+'px';el.setSelectionRange(el.value.length,el.value.length);});}
+ },[t]);
 
  const exportChat=useCallback(async(format:'md'|'json')=>{
   const id=useApp.getState().activeId;if(!id)return;
-  try{const path=await window.lumen.chats.export(id,format);flash(path?'Saved to '+path:'Export cancelled');}
-  catch(e){flash(e instanceof Error?e.message:'Export failed');}
+  try{const path=await window.lumen.chats.export(id,format);flash(path?t('app.savedTo',{path}):t('app.exportCancelled'));}
+  catch(e){flash(e instanceof Error?e.message:t('app.exportFailed'));}
  },[flash]);
 
  const wipeData=useCallback(async()=>{
@@ -692,10 +715,10 @@ export default function App(){
    // Wipe flushes synchronously in main; if that write failed the conversations come
    // back on next launch, so only claim success once health confirms it.
    const err=await checkHealth();
-   flash(err?'Could not write the database — nothing was deleted':'All conversations deleted');
-  }catch(e){flash(e instanceof Error?e.message:'Could not erase data');}
+   flash(err?t('app.wipeFailedWrite'):t('app.wipeDone'));
+  }catch(e){flash(e instanceof Error?e.message:t('app.wipeFailed'));}
  },[checkHealth,flash,set]);
- const openDataFolder=useCallback(async()=>{try{await window.lumen.data.openFolder();}catch{flash('Could not open the data folder');}},[flash]);
+ const openDataFolder=useCallback(async()=>{try{await window.lumen.data.openFolder();}catch{flash(t('app.openDataFolderFailed'));}},[flash]);
 
  const openProvidersTab=useCallback(()=>{setShowSettings(true);setTab('providers');},[]);
  const closeSettings=useCallback(()=>setShowSettings(false),[]);
@@ -709,7 +732,7 @@ export default function App(){
    if(nc)openChat(nc);
   }
  },[openTabs,openChat]);
- const newChatAndFocus=useCallback(()=>{if(isMobile)setShowSidebar(false);void newChat().then(()=>input.current?.focus());},[newChat]);
+ const newChatAndFocus=useCallback(()=>{void newChat().then(()=>input.current?.focus());},[newChat]);
  const pickSuggestion=useCallback((t:string)=>{setDraft(t);input.current?.focus();},[]);
 
  // ---- stream batching: main sends a chunk per token; accumulate and flush on rAF
@@ -759,13 +782,18 @@ export default function App(){
     if(initial){setOpenTabs([initial.id]);void load(initial.id);}
     void checkHealth();
    })
-   .catch(e=>flash(e instanceof Error?e.message:'Could not load your workspace'));
+   .catch(e=>flash(e instanceof Error?e.message:t('app.loadWorkspaceFailed')));
  },[checkHealth,flash,load,set]);
 
- // ---- autoscroll: follow the stream only when already near the bottom
+ // ---- autoscroll: follow the stream only when already near the bottom.
+ // Nearby jumps (new bubble, typing indicator) glide; mid-stream frames stay
+ // instant so the follow never lags behind the tokens, and opening a long
+ // history snaps straight to the end instead of scrolling through it.
  useEffect(()=>{
   if(!atBottom)return;
-  bottom.current?.scrollIntoView({behavior:'auto'});
+  const el=conversation.current;
+  const near=!!el&&el.scrollHeight-el.scrollTop-el.clientHeight<el.clientHeight*2;
+  bottom.current?.scrollIntoView({behavior:stream?.text||!near?'auto':'smooth'});
  },[atBottom,messages,stream?.text,stream?.reasoning]);
 
  // The main process may rename a chat itself (auto-title after the first reply);
@@ -850,7 +878,7 @@ export default function App(){
  // ---- "while you were away": count replies that finished in the background
  useEffect(()=>{
   const onFocus=()=>{
-   if(awayCount.current>0){flash('While you were away: '+awayCount.current+' '+(awayCount.current===1?'reply':'replies')+' finished');awayCount.current=0;}
+   if(awayCount.current>0){flash(awayCount.current===1?t('app.awayOne',{n:awayCount.current}):t('app.awayMany',{n:awayCount.current}));awayCount.current=0;}
   };
   window.addEventListener('focus',onFocus);
   return()=>window.removeEventListener('focus',onFocus);
@@ -883,21 +911,21 @@ export default function App(){
  // Command palette (Ctrl+P): static commands first, then fuzzy chat matches.
  const paletteItems=(q:string)=>{
   const cmds=[
-   {id:'cmd:new',icon:<Sparkles size={13}/>,label:'New conversation',hint:settings.hotkeys.newChat,run:()=>void newChat()},
-   {id:'cmd:settings',icon:<Settings size={13}/>,label:'Open settings',hint:settings.hotkeys.openSettings,run:()=>setShowSettings(true)},
-   {id:'cmd:sidebar',icon:<PanelLeftClose size={13}/>,label:'Toggle sidebar',hint:settings.hotkeys.toggleSidebar,run:toggleSidebar},
-   {id:'cmd:focus',icon:<Maximize2 size={13}/>,label:'Toggle focus mode',hint:'Esc',run:()=>setFocusMode(v=>!v)},
-   {id:'cmd:compare',icon:<GitCompareArrows size={13}/>,label:'Compare models…',hint:'',run:()=>setCompareOpen(true)},
-   {id:'cmd:summarize',icon:<Sparkles size={13}/>,label:'Summarize this chat',hint:'',run:()=>void runSummarize()},
-   {id:'cmd:zip',icon:<Archive size={13}/>,label:'Export chat as zip…',hint:'',run:()=>void exportZip()},
+   {id:'cmd:new',icon:<Sparkles size={13}/>,label:t('app.cmdNew'),hint:settings.hotkeys.newChat,run:()=>void newChat()},
+   {id:'cmd:settings',icon:<Settings size={13}/>,label:t('app.cmdSettings'),hint:settings.hotkeys.openSettings,run:()=>setShowSettings(true)},
+   {id:'cmd:sidebar',icon:<PanelLeftClose size={13}/>,label:t('app.cmdSidebar'),hint:settings.hotkeys.toggleSidebar,run:toggleSidebar},
+   {id:'cmd:focus',icon:<Maximize2 size={13}/>,label:t('app.cmdFocus'),hint:'Esc',run:()=>setFocusMode(v=>!v)},
+   {id:'cmd:compare',icon:<GitCompareArrows size={13}/>,label:t('app.cmdCompare'),hint:'',run:()=>setCompareOpen(true)},
+   {id:'cmd:summarize',icon:<Sparkles size={13}/>,label:t('app.cmdSummarize'),hint:'',run:()=>void runSummarize()},
+   {id:'cmd:zip',icon:<Archive size={13}/>,label:t('app.cmdZip'),hint:'',run:()=>void exportZip()},
   ].filter(c=>!q||c.label.toLowerCase().includes(q));
   const chatItems=chats.filter(c=>!q||c.title.toLowerCase().includes(q)).slice(0,8)
-   .map(c=>({id:'chat:'+c.id,icon:<BookOpen size={13}/>,label:c.title,hint:'chat',run:()=>openChat(c)}));
+   .map(c=>({id:'chat:'+c.id,icon:<BookOpen size={13}/>,label:c.title,hint:t('app.chatHint'),run:()=>openChat(c)}));
   return [...cmds,...chatItems].slice(0,12);
  };
 
  return <div className={'app-shell'+(settings.density==='compact'||settings.compactMode?' compact':'')+(settings.density==='comfortable'?' comfy':'')+(focusMode?' focus':'')+(profile.mica?' mica':'')} data-theme={settings.theme} data-accent={settings.accent} data-preset={settings.themePreset}>
-  {!isMobile&&<Titlebar busy={anyBusy}/>}
+  <Titlebar busy={anyBusy}/>
   <div className="layout">
    {showSidebar&&!focusMode&&<Sidebar chats={chats} activeId={activeId} providers={providers} folders={folders} busyIds={busyIds} needsSetup={needsSetup} unread={unread}
      newChatHotkey={settings.hotkeys.newChat}
@@ -905,92 +933,103 @@ export default function App(){
      onTogglePin={togglePin} onMoveFolder={moveToFolder} onToggleArchived={toggleArchived} onSetTags={setTags}
      onCreateFolder={createFolder} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder}
      onOpenHit={openChatAt}/>}
-   {isMobile&&showSidebar&&!focusMode&&<div className="drawer-backdrop" onClick={()=>setShowSidebar(false)}/>}
    <main className="main-panel">
-    {openTabs.length>0&&!focusMode&&<div className="tab-strip" role="tablist" aria-label="Open conversations">
+    {openTabs.length>0&&!focusMode&&<div className="tab-strip" role="tablist" aria-label={t('app.openConversations')}>
      {openTabs.map(id=>{const c=chats.find(x=>x.id===id);if(!c)return null;
       return <div key={id} role="tab" aria-selected={id===activeId} className={'chat-tab'+(id===activeId?' active':'')}>
-       {!!streams[id]&&<span className="tab-busy" aria-label="Generating"/>}
+       {!!streams[id]&&<span className="tab-busy" aria-label={t('app.generating')}/>}
        <button className="tab-title" title={c.title} onClick={()=>openChat(c)}>{c.title}</button>
-       <button className="tab-close" aria-label={'Close tab '+c.title} onClick={()=>closeTab(id)}><X size={11}/></button>
+       <button className="tab-close" aria-label={t('app.closeTab',{title:c.title})} onClick={()=>closeTab(id)}><X size={11}/></button>
       </div>;})}
     </div>}
     {persistError&&<div className="persist-error" role="alert">
      <AlertTriangle size={14}/>
-     <span>Changes are not being saved to disk: {persistError}. Free up space or close whatever is locking the file, then restart Lumen.</span>
+     <span>{t('app.persistError',{error:persistError})}</span>
     </div>}
     <div className="toolbar">
      <div className="toolbar-left">
-      <button className="icon-btn" aria-label={showSidebar?'Hide sidebar':'Show sidebar'} onClick={toggleSidebar}><PanelLeftClose size={16}/></button>
-      <span>Conversations</span>{active&&<><i>/</i><b>{active.title}</b></>}
+      <button className="icon-btn" aria-label={showSidebar?t('app.hideSidebar'):t('app.showSidebar')} onClick={toggleSidebar}><PanelLeftClose size={16}/></button>
+      <span>{t('app.conversations')}</span>{active&&<><i>/</i><b>{active.title}</b></>}
       {/* Branch lineage: jump back to the source chat, or into one of its forks. */}
-      {active?.branchedFrom&&<button className="branch-link" title="Open the conversation this one branched from"
+      {active?.branchedFrom&&<button className="branch-link" title={t('app.openBranchSource')}
        onClick={()=>{const parent=chats.find(c=>c.id===active.branchedFrom);if(parent)openChat(parent);}}>
-       <GitFork size={12}/> from {chats.find(c=>c.id===active.branchedFrom)?.title??'deleted chat'}</button>}
-      {active&&chats.some(c=>c.branchedFrom===active.id)&&<select className="branch-select" value="" aria-label="Open a branch of this conversation"
+       <GitFork size={12}/> {t('app.branchFrom')} {chats.find(c=>c.id===active.branchedFrom)?.title??t('app.deletedChat')}</button>}
+      {active&&chats.some(c=>c.branchedFrom===active.id)&&<select className="branch-select" value="" aria-label={t('app.openBranch')}
        onChange={e=>{const chat=chats.find(c=>c.id===e.target.value);if(chat)openChat(chat);}}>
-       <option value="">{chats.filter(c=>c.branchedFrom===active.id).length} {chats.filter(c=>c.branchedFrom===active.id).length===1?'branch':'branches'}</option>
+       <option value="">{chats.filter(c=>c.branchedFrom===active.id).length===1?t('app.branchOne',{n:chats.filter(c=>c.branchedFrom===active.id).length}):t('app.branchMany',{n:chats.filter(c=>c.branchedFrom===active.id).length})}</option>
        {chats.filter(c=>c.branchedFrom===active.id).map(c=><option key={c.id} value={c.id}>{c.title}</option>)}
       </select>}
       {/* Workspace: the model gets file tools inside this folder (writes ask first). */}
       {active&&<button className={'branch-link'+(active.workspace?' workspace-on':'')}
-       title={active.workspace?active.workspace+' — the model can list, read and search files here; writes need your approval. Click to change.':'Attach a workspace folder — the model can list, read and search files in it; writes need your approval'}
+       title={active.workspace?t('app.workspaceTitle',{path:active.workspace}):t('app.workspaceAttachTitle')}
        onClick={()=>void pickWorkspace()}>
-       <FolderOpen size={12}/>{active.workspace?active.workspace.split(/[\\/]/).filter(Boolean).pop():'Workspace'}</button>}
-      {active?.workspace&&<button className="icon-btn" aria-label="Detach workspace folder" title="Detach workspace" onClick={()=>void clearWorkspace()}><X size={12}/></button>}
+       <FolderOpen size={12}/>{active.workspace?active.workspace.split(/[\\/]/).filter(Boolean).pop():t('app.workspace')}</button>}
+      {active?.workspace&&<button className="icon-btn" aria-label={t('app.detachWorkspaceLabel')} title={t('app.detachWorkspace')} onClick={()=>void clearWorkspace()}><X size={12}/></button>}
       {active?.workspace&&<button className={'branch-link'+(active.workspaceReadonly?' workspace-on':'')}
-       title={active.workspaceReadonly?'Read-only mode is ON: the model cannot write files or run commands. Click to allow writes (with approval).':'Read-only mode is off. Click to forbid all file writes in this chat.'}
+       title={active.workspaceReadonly?t('app.readonlyTitleOn'):t('app.readonlyTitleOff')}
        onClick={()=>void toggleReadonly()}>
-       <Shield size={12}/>{active.workspaceReadonly?'Read-only':'Writable'}</button>}
+       <Shield size={12}/>{active.workspaceReadonly?t('app.readonly'):t('app.writable')}</button>}
      </div>
      <div className="toolbar-right">
       {active&&<>
-       {!!todos.length&&<button className={'icon-btn'+(showTodos?' active':'')} aria-label="Task checklist" title="Task checklist (todo_write)" onClick={()=>setShowTodos(v=>!v)}><ListChecks size={16}/></button>}
-       {active.workspace&&<button className={'icon-btn'+(showFileOps?' active':'')} aria-label="Workspace activity" title="Workspace activity — files the model read, wrote, or was refused" onClick={()=>setShowFileOps(v=>!v)}><FileClock size={16}/></button>}
-       <button className={'icon-btn'+(showDocs?' active':'')} aria-label="Attached documents" title="Attached documents (RAG) — their relevant excerpts are added to the model's context" onClick={()=>setShowDocs(v=>!v)}><BookOpen size={16}/></button>
-       <button className="icon-btn" aria-label="Compare models" title="Compare: replay this conversation on another model, side by side" onClick={()=>{setCompareAnswers(null);setCompareOpen(true);}}><GitCompareArrows size={16}/></button>
-       {messages.length>=4&&<button className="icon-btn" aria-label="Summarize this chat" title="Summarize this chat (start fresh with the summary)" disabled={summarizing} onClick={()=>void runSummarize()}><Sparkles size={16}/></button>}
-       <button className="icon-btn" aria-label={active.archived?'Unarchive this chat':'Archive this chat'} title={active.archived?'Unarchive':'Archive (hide without deleting)'} onClick={()=>void toggleArchived(active)}><Archive size={16}/></button>
+       {!!todos.length&&<button className={'icon-btn'+(showTodos?' active':'')} aria-label={t('app.taskChecklist')} title={t('app.taskChecklistTitle')} onClick={()=>setShowTodos(v=>!v)}><ListChecks size={16}/></button>}
+       {active.workspace&&<button className={'icon-btn'+(showFileOps?' active':'')} aria-label={t('app.workspaceActivity')} title={t('app.workspaceActivityTitle')} onClick={()=>setShowFileOps(v=>!v)}><FileClock size={16}/></button>}
+       <button className={'icon-btn'+(showDocs?' active':'')} aria-label={t('app.attachedDocs')} title={t('app.attachedDocsTitle')} onClick={()=>setShowDocs(v=>!v)}><BookOpen size={16}/></button>
+       <button className="icon-btn" aria-label={t('app.compareModels')} title={t('app.compareTitle')} onClick={()=>{setCompareAnswers(null);setCompareOpen(true);}}><GitCompareArrows size={16}/></button>
+       {messages.length>=4&&<button className="icon-btn" aria-label={t('app.summarizeChat')} title={t('app.summarizeTitle')} disabled={summarizing} onClick={()=>void runSummarize()}><Sparkles size={16}/></button>}
+       <button className="icon-btn" aria-label={active.archived?t('app.unarchiveChat'):t('app.archiveChat')} title={active.archived?t('app.unarchive'):t('app.archiveTitle')} onClick={()=>void toggleArchived(active)}><Archive size={16}/></button>
       </>}
-      <button className={'icon-btn'+(focusMode?' active':'')} aria-label="Focus mode" title="Focus mode — hide everything but the conversation (Esc to exit)" onClick={()=>setFocusMode(v=>!v)}>{focusMode?<Minimize2 size={16}/>:<Maximize2 size={16}/>}</button>
-      {!isMobile&&<button className={'icon-btn'+(alwaysOnTop?' active':'')} aria-label="Always on top" title="Always on top" onClick={toggleAlwaysOnTop}><Pin size={16}/></button>}
-      <span className="private-label"><Shield size={13}/>Private by design</span>
-      <button className="icon-btn" aria-label="Settings" onClick={openProvidersTab}><Settings size={16}/></button>
+      <button className={'icon-btn'+(focusMode?' active':'')} aria-label={t('app.focusMode')} title={t('app.focusModeTitle')} onClick={()=>setFocusMode(v=>!v)}>{focusMode?<Minimize2 size={16}/>:<Maximize2 size={16}/>}</button>
+      <button className={'icon-btn'+(alwaysOnTop?' active':'')} aria-label={t('app.alwaysOnTop')} title={t('app.alwaysOnTop')} onClick={toggleAlwaysOnTop}><Pin size={16}/></button>
+      <span className="private-label"><Shield size={13}/>{t('app.privateByDesign')}</span>
+      <button className="icon-btn" aria-label={t('app.settingsLabel')} onClick={openProvidersTab}><Settings size={16}/></button>
      </div>
     </div>
     {/* Batch-5 side panels: the model's checklist and the workspace activity log. */}
-    {showTodos&&!!todos.length&&<aside className="side-panel" aria-label="Task checklist">
-     <header><CheckSquare size={13}/> Tasks</header>
+    {showTodos&&!!todos.length&&<aside className="side-panel" aria-label={t('app.taskChecklist')}>
+     <header><CheckSquare size={13}/> {t('app.tasks')}</header>
      <ul>{todos.map((t,i)=><li key={i} className={t.done?'done':''}><input type="checkbox" checked={t.done} readOnly tabIndex={-1}/><span>{t.text}</span></li>)}</ul>
     </aside>}
-    {showFileOps&&<aside className="side-panel" aria-label="Workspace activity">
-     <header><FileClock size={13}/> Workspace activity</header>
+    {showFileOps&&<aside className="side-panel" aria-label={t('app.workspaceActivity')}>
+     <header><FileClock size={13}/> {t('app.workspaceActivity')}</header>
      {fileOps.length?<ul>{fileOps.map(op=><li key={op.id} className={'op-'+op.status}>
        <div><b>{op.tool}</b>{op.path&&<code>{op.path}</code>}</div>
        <small>{new Date(op.createdAt).toLocaleTimeString()} · {op.status}{op.detail&&' — '+op.detail.slice(0,120)}</small>
-       {op.snapshot&&op.status==='ok'&&op.tool!=='rollback'&&<button className="op-rollback" onClick={()=>void rollbackOp(op.id)}>Roll back</button>}
-      </li>)}</ul>:<div className="empty-state"><FileClock size={18}/><p>No operations yet — file activity of the model will show up here.</p></div>}
+       {op.snapshot&&op.status==='ok'&&op.tool!=='rollback'&&<button className="op-rollback" onClick={()=>void rollbackOp(op.id)}>{t('app.rollback')}</button>}
+      </li>)}</ul>:<div className="empty-state"><FileClock size={18}/><p>{t('app.noOps')}</p></div>}
     </aside>}
     {/* Batch 6: attached documents (RAG) — relevant excerpts join the system prompt. */}
-    {showDocs&&<aside className="side-panel" aria-label="Attached documents">
-     <header><BookOpen size={13}/> Documents</header>
+    {showDocs&&<aside className="side-panel" aria-label={t('app.attachedDocs')}>
+     <header><BookOpen size={13}/> {t('app.documents')}</header>
      {docs.length?<ul>{docs.map(d=><li key={d.id}>
        <div><b>{d.name}</b></div>
-       <small>{Math.round(d.chars/100)/10}k chars · {new Date(d.createdAt).toLocaleDateString()}</small>
-       <button className="op-rollback" onClick={()=>void removeDoc(d.id)}>Remove</button>
-      </li>)}</ul>:<div className="empty-state"><BookOpen size={18}/><p>No documents yet — attach a text, markdown or PDF file and the model will quote from it.</p><button className="secondary-button" onClick={()=>void attachDoc()}>Attach document…</button></div>}
-     <div className="settings-actions"><button className="secondary-button" disabled={docs.length>=8} onClick={()=>void attachDoc()}>Attach document…</button></div>
+       <small>{t('app.charsK',{n:Math.round(d.chars/100)/10})} · {new Date(d.createdAt).toLocaleDateString()}</small>
+       <button className="op-rollback" onClick={()=>void removeDoc(d.id)}>{t('app.remove')}</button>
+      </li>)}</ul>:<div className="empty-state"><BookOpen size={18}/><p>{t('app.noDocs')}</p><button className="secondary-button" onClick={()=>void attachDoc()}>{t('app.attachDoc')}</button></div>}
+     <div className="settings-actions"><button className="secondary-button" disabled={docs.length>=8} onClick={()=>void attachDoc()}>{t('app.attachDoc')}</button></div>
     </aside>}
     <section className="conversation" ref={conversation} onScroll={onScroll}>
+     {/* Reading progress hairline: scaleX is driven by a ref in onScroll. */}
+     {(messages.length>0||busy)&&<div className="read-progress" aria-hidden="true"><i ref={progressRef}/></div>}
      {messages.length===0&&!stream&&!busy
       ?<Welcome needsSetup={needsSetup} onSetup={openProvidersTab} onPick={pickSuggestion}/>
       :<MessageList messages={messages} busy={busy} stream={stream?.text??''} reasoning={stream?.reasoning??''} error={error}
         status={stream?.status} highlightId={highlightId} toolEvents={stream?.toolEvents}
         variants={variants} providers={providers} bottomRef={bottom} onCopy={copy} onRegenerate={regenerate}
         onContinue={continueMessage} onDeleteMessage={deleteMessage} onEditMessage={commitEdit} onRetry={regenerate}
-        onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat} onBookmark={toggleBookmark} onRate={rateMessage} userInitial={profile.username?profile.username[0].toUpperCase():'Y'}/>}
+        onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat} onBookmark={toggleBookmark} onRate={rateMessage} userInitial={profile.username?profile.username[0].toUpperCase():'Y'}
+        onQuote={quoteSelection}/>}
+     {/* Minimap: one bar per message, height ∝ length; the viewport rectangle and
+         clicks jump straight to a message (batch 9). */}
+     {messages.length>3&&<div className="minimap-stick"><nav className="minimap" aria-label={t('messages.minimap')}>
+      <i className="minimap-view" ref={miniViewRef}/>
+      {messages.filter(m=>!m.id.startsWith('pending-')).map(m=>
+       <button key={m.id} tabIndex={-1} className={'mini-bar '+m.role+(m.bookmarked?' bm':'')} style={{flexGrow:Math.max(60,m.content.length)}}
+        title={m.content.replace(/\s+/g,' ').slice(0,60)}
+        onClick={()=>document.getElementById('msg-'+m.id)?.scrollIntoView({block:'center',behavior:'smooth'})}/>)}
+     </nav></div>}
     </section>
-    {!atBottom&&(messages.length>0||busy)&&<button className="scroll-bottom" aria-label="Scroll to latest" onClick={scrollToBottom}>↓</button>}
+    {!atBottom&&(messages.length>0||busy)&&<button className="scroll-bottom" aria-label={t('app.scrollToLatest')} onClick={scrollToBottom}>↓</button>}
     <Composer ref={input} draft={draft} busy={busy} needsSetup={needsSetup} providers={providers} providerId={providerId} model={model}
       images={images} onAddImages={addImages} onRemoveImage={removeImage}
       personas={settings.personas} personaId={settings.personaId} onPersona={id=>void pref('personaId',id)}
@@ -1001,31 +1040,31 @@ export default function App(){
    </main>
   </div>
   {/* Compare mode: the last turn replayed on a second provider/model, side by side. */}
-  {compareOpen&&<div className="modal-backdrop" role="dialog" aria-label="Compare models" onClick={()=>setCompareOpen(false)}>
+  {compareOpen&&<div className="modal-backdrop" role="dialog" aria-label={t('app.compareModels')} onClick={()=>setCompareOpen(false)}>
    <div className="modal compare-modal" onClick={e=>e.stopPropagation()}>
-    <header><h2><GitCompareArrows size={16}/> Compare models</h2><button className="icon-btn" aria-label="Close" onClick={()=>setCompareOpen(false)}><X size={16}/></button></header>
+    <header><h2><GitCompareArrows size={16}/> {t('app.compareModels')}</h2><button className="icon-btn" aria-label={t('app.close')} onClick={()=>setCompareOpen(false)}><X size={16}/></button></header>
     <div className="compare-controls">
-     <select value={compareProvider} onChange={e=>{const id=e.target.value as ProviderId;setCompareProvider(id);setCompareModel(providers.find(x=>x.id===id)?.models[0]??'');}} aria-label="Compare provider">
+     <select value={compareProvider} onChange={e=>{const id=e.target.value as ProviderId;setCompareProvider(id);setCompareModel(providers.find(x=>x.id===id)?.models[0]??'');}} aria-label={t('app.compareProvider')}>
       {providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
      </select>
-     <select value={compareModel} onChange={e=>setCompareModel(e.target.value)} aria-label="Compare model">
-      <option value="">Choose model</option>
+     <select value={compareModel} onChange={e=>setCompareModel(e.target.value)} aria-label={t('app.compareModelLabel')}>
+      <option value="">{t('app.chooseModel')}</option>
       {(providers.find(p=>p.id===compareProvider)?.models??[]).map(m=><option key={m} value={m}>{m}</option>)}
      </select>
-     <button className="btn-primary" disabled={compareBusy||!compareModel||!active} onClick={()=>void runCompare()}>{compareBusy?'Comparing…':'Run compare'}</button>
+     <button className="btn-primary" disabled={compareBusy||!compareModel||!active} onClick={()=>void runCompare()}>{compareBusy?t('app.comparing'):t('app.runCompare')}</button>
     </div>
     {compareAnswers&&<div className="compare-grid">
      {compareAnswers.map((a,i)=><div className="compare-cell" key={i}>
       <header><b>{a.model}</b><small>{a.providerId}{a.completionTokens?' · ↓'+a.completionTokens:''}</small></header>
-      {a.error?<p className="compare-error" role="alert">{a.error}</p>:<div className="markdown" dangerouslySetInnerHTML={{__html:renderMarkdown(a.text||'(no answer)')}}/>}
+      {a.error?<p className="compare-error" role="alert">{a.error}</p>:<div className="markdown" dangerouslySetInnerHTML={{__html:renderMarkdown(a.text||t('app.noAnswer'))}}/>}
      </div>)}
     </div>}
    </div>
   </div>}
   {/* Command palette (Ctrl+P): commands above, matching conversations below. */}
-  {showPalette&&<div className="modal-backdrop" role="dialog" aria-label="Command palette" onClick={()=>setShowPalette(false)}>
+  {showPalette&&<div className="modal-backdrop" role="dialog" aria-label={t('app.commandPalette')} onClick={()=>setShowPalette(false)}>
    <div className="modal palette-modal" onClick={e=>e.stopPropagation()}>
-    <div className="palette-head"><Command size={14}/><input autoFocus value={paletteQuery} placeholder="Type a command or chat name…" aria-label="Command palette"
+    <div className="palette-head"><Command size={14}/><input autoFocus value={paletteQuery} placeholder={t('app.palettePlaceholder')} aria-label={t('app.commandPalette')}
      onChange={e=>setPaletteQuery(e.target.value)}
      onKeyDown={e=>{
       if(e.key==='Escape'){setShowPalette(false);return;}
@@ -1037,17 +1076,17 @@ export default function App(){
      }}/></div>
     <div className="palette-list">{paletteItems(paletteQuery.trim().toLowerCase()).map(it=>
      <button key={it.id} onClick={()=>{setShowPalette(false);it.run();}}>{it.icon}<span>{it.label}</span>{it.hint&&<small>{it.hint}</small>}</button>)}
-     {paletteItems(paletteQuery.trim().toLowerCase()).length===0&&<div className="empty-state"><Command size={16}/><p>No matches for «{paletteQuery.trim()}»</p></div>}
+     {paletteItems(paletteQuery.trim().toLowerCase()).length===0&&<div className="empty-state"><Command size={16}/><p>{t('app.noMatches',{q:paletteQuery.trim()})}</p></div>}
     </div>
    </div>
   </div>}
   {/* Summarize modal: the condensed transcript with a one-click fresh start. */}
-  {summary&&<div className="modal-backdrop" role="dialog" aria-label="Chat summary" onClick={()=>setSummary(null)}>
+  {summary&&<div className="modal-backdrop" role="dialog" aria-label={t('app.chatSummary')} onClick={()=>setSummary(null)}>
    <div className="modal summary-modal" onClick={e=>e.stopPropagation()}>
-    <header><h2><Sparkles size={16}/> Summary</h2><button className="icon-btn" aria-label="Close" onClick={()=>setSummary(null)}><X size={16}/></button></header>
+    <header><h2><Sparkles size={16}/> {t('app.summary')}</h2><button className="icon-btn" aria-label={t('app.close')} onClick={()=>setSummary(null)}><X size={16}/></button></header>
     <div className="summary-body markdown-body" dangerouslySetInnerHTML={{__html:renderMarkdown(summary)}}/>
-    <footer><button className="btn-secondary" onClick={()=>setSummary(null)}>Close</button>
-     <button className="btn-primary" onClick={()=>void newChatFromSummary()}>New chat from summary</button></footer>
+    <footer><button className="btn-secondary" onClick={()=>setSummary(null)}>{t('app.close')}</button>
+     <button className="btn-primary" onClick={()=>void newChatFromSummary()}>{t('app.newChatFromSummary')}</button></footer>
    </div>
   </div>}
   {showSettings&&<SettingsModal tab={tab} onTab={setTab} providers={providers} providerId={providerId} model={model}
@@ -1061,8 +1100,8 @@ export default function App(){
   {/* Actionable toast: a workspace file was just changed — one click rolls it back. */}
   {actionToast&&<div className="toast toast-action" role="status">
    <span>{actionToast.text}</span>
-   <button onClick={()=>{const id=actionToast.opId;setActionToast(null);void rollbackOp(id);}}>Roll back</button>
-   <button aria-label="Dismiss" onClick={()=>setActionToast(null)}><X size={12}/></button>
+   <button onClick={()=>{const id=actionToast.opId;setActionToast(null);void rollbackOp(id);}}>{t('app.rollback')}</button>
+   <button aria-label={t('app.dismiss')} onClick={()=>setActionToast(null)}><X size={12}/></button>
   </div>}
  </div>;
 }

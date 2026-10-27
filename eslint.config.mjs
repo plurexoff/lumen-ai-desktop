@@ -5,7 +5,7 @@ import globals from 'globals';
 
 export default tseslint.config(
   // Generated / vendored output is never linted.
-  { ignores: ['dist/**', 'dist-electron/**', 'dist-cli/**', 'release/**', 'node_modules/**', 'build/**'] },
+  { ignores: ['dist/**', 'dist-electron/**', 'release/**', 'node_modules/**', 'build/**', '**/build/**', 'android/app/src/main/assets/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -15,7 +15,7 @@ export default tseslint.config(
     languageOptions: { globals: { ...globals.browser } },
   },
   {
-    files: ['electron/**/*.ts', 'cli/**/*.ts', 'tests/**/*.ts'],
+    files: ['electron/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.mjs'],
     languageOptions: { globals: { ...globals.node } },
   },
   {

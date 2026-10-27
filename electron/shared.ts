@@ -83,7 +83,10 @@ export type Density = (typeof DENSITIES)[number];
 // OpenRouter reasoning.effort.
 export const REASONING_EFFORTS = ['off', 'low', 'medium', 'high'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
-export interface SettingsData { theme: 'dark' | 'light'; systemPrompt: string; temperature: number; maxTokens: number; topP: number; minimizeToTray: boolean; autoStart: boolean; notifications: boolean; accent: Accent; personas: Persona[]; personaId: string; hotkeys: HotkeyMap; templates: PromptTemplate[]; defaultWorkspace: string; customCss: string; compactMode: boolean; mcpServers: McpServer[]; density: Density; themePreset: ThemePreset; reasoningEffort: ReasoningEffort; }
+// UI language. English is the default; Russian is a full translation.
+export const LANGUAGES = ['en', 'ru'] as const;
+export type Language = (typeof LANGUAGES)[number];
+export interface SettingsData { theme: 'dark' | 'light'; language: Language; systemPrompt: string; temperature: number; maxTokens: number; topP: number; minimizeToTray: boolean; autoStart: boolean; notifications: boolean; accent: Accent; personas: Persona[]; personaId: string; hotkeys: HotkeyMap; templates: PromptTemplate[]; defaultWorkspace: string; customCss: string; compactMode: boolean; mcpServers: McpServer[]; density: Density; themePreset: ThemePreset; reasoningEffort: ReasoningEffort; }
 export interface AppProfile { mica: boolean; username: string }
 export interface DesktopAPI {
  window: { minimize():void; toggleMaximize():void; close():void; setAlwaysOnTop(on:boolean):void };

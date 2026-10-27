@@ -7,6 +7,7 @@ import {ACCENTS,DENSITIES,isCustomProviderId,PERSONA_COLORS,REASONING_EFFORTS,TH
 import type {Prefs} from '../store';
 import {providerColors} from '../store';
 import {formatCost,messageCost} from '../cost';
+import {useT} from '../i18n';
 
 type Tab='providers'|'appearance'|'agents'|'data'|'stats';
 
@@ -81,9 +82,10 @@ function comboFromEvent(e:React.KeyboardEvent):string|null{
 // does not fire behind the modal and the field itself keeps the event.
 function HotkeyField({label,value,onChange,onInvalid}:{label:string;value:string;onChange:(v:string)=>void;onInvalid:(msg:string)=>void}){
  const [listening,setListening]=useState(false);
+ const t=useT();
  return <div className="hotkey-row">
   <span>{label}</span>
-  <button className={'hotkey-capture '+(listening?'listening':'')} aria-label={'Change shortcut for '+label}
+  <button className={'hotkey-capture '+(listening?'listening':'')} aria-label={t('settings.changeShortcutAria',{label})}
    onClick={()=>setListening(v=>!v)}
    onBlur={()=>setListening(false)}
    onKeyDown={e=>{
@@ -92,15 +94,15 @@ function HotkeyField({label,value,onChange,onInvalid}:{label:string;value:string
     if(e.key==='Escape'){setListening(false);return;}
     const combo=comboFromEvent(e);
     if(!combo)return;
-    if(!/^(Ctrl|Alt)/.test(combo)&&!combo.includes('+Ctrl')&&!combo.includes('+Alt')){onInvalid('A shortcut needs Ctrl or Alt');return;}
+    if(!/^(Ctrl|Alt)/.test(combo)&&!combo.includes('+Ctrl')&&!combo.includes('+Alt')){onInvalid(t('settings.hotkeyInvalid'));return;}
     onChange(combo);setListening(false);
    }}>
-   {listening?'Press keys…':value}
+   {listening?t('settings.pressKeys'):value}
   </button>
  </div>;
 }
 
-const HOTKEY_LABELS:Record<keyof HotkeyMap,string>={newChat:'New conversation',openSettings:'Open settings',toggleSidebar:'Toggle sidebar',quickChat:'Quick chat window'};
+const HOTKEY_LABELS:Record<keyof HotkeyMap,string>={newChat:'settings.hotkeyNewChat',openSettings:'settings.hotkeyOpenSettings',toggleSidebar:'settings.hotkeyToggleSidebar',quickChat:'settings.hotkeyQuickChat'};
 
 // Persona editor draft: ids are assigned on creation, the rest is plain fields.
 // Kept local to the modal; saving writes the whole personas array via onPref.
@@ -110,13 +112,14 @@ const blankTemplate=():PromptTemplate=>({id:crypto.randomUUID(),name:'',text:''}
 
 function TemplateEditor({template,onSave,onCancel}:{template:PromptTemplate;onSave:(t:PromptTemplate)=>void;onCancel:()=>void}){
  const [draft,setDraft]=useState<PromptTemplate>(template);
+ const t=useT();
  return <div className="persona-editor">
-  <Field label="Name"><input value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))} placeholder="Explain like I'm five" autoFocus/></Field>
-  <Field label="Template text"><textarea rows={6} value={draft.text} onChange={e=>setDraft(d=>({...d,text:e.target.value}))} placeholder={'Explain simply:\n\n{{input}}'}/></Field>
-  <p className="field-hint"><code>{'{{input}}'}</code> is replaced by whatever is currently typed in the composer.</p>
+  <Field label={t('settings.name')}><input value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))} placeholder={t('settings.templateNamePh')} autoFocus/></Field>
+  <Field label={t('settings.templateText')}><textarea rows={6} value={draft.text} onChange={e=>setDraft(d=>({...d,text:e.target.value}))} placeholder={t('settings.templateTextPh')}/></Field>
+  <p className="field-hint"><code>{'{{input}}'}</code> {t('settings.templateHint')}</p>
   <div className="settings-actions">
-   <button className="secondary-button" onClick={onCancel}>Cancel</button>
-   <button className="primary-button" disabled={!draft.name.trim()||!draft.text.trim()} onClick={()=>onSave({...draft,name:draft.name.trim()})}>Save template</button>
+   <button className="secondary-button" onClick={onCancel}>{t('settings.cancel')}</button>
+   <button className="primary-button" disabled={!draft.name.trim()||!draft.text.trim()} onClick={()=>onSave({...draft,name:draft.name.trim()})}>{t('settings.saveTemplate')}</button>
   </div>
  </div>;
 }
@@ -124,12 +127,39 @@ function TemplateEditor({template,onSave,onCancel}:{template:PromptTemplate;onSa
 // Daily token/cost bars for the Statistics tab — plain divs, no chart library.
 function StatsView(){
  const [days,setDays]=useState<DayUsage[]|null>(null);
+ const t=useT();
  useEffect(()=>{let alive=true;void window.lumen.chats.usageByDay().then(d=>{if(alive)setDays(d);}).catch(()=>{if(alive)setDays([]);});return()=>{alive=false;};},[]);
- if(days===null)return <p className="models-empty">Loading…</p>;
- if(!days.length)return <p className="models-empty">No usage yet — statistics appear after your first replies.</p>;
+ if(days===null)return <p className="models-empty">{t('settings.loading')}</p>;
+ if(!days.length)return <p className="models-empty">{t('settings.noUsage')}</p>;
  const maxTokens=Math.max(...days.map(d=>d.promptTokens+d.completionTokens),1);
  const priced=days.some(d=>d.cost>0);
+ // Activity heatmap (GitHub-style): last 18 weeks, columns = weeks starting Monday,
+ // intensity = total tokens that day. Future days render as empty placeholders.
+ const HEAT_WEEKS=18;
+ const byDay=new Map(days.map(d=>[d.day,d.promptTokens+d.completionTokens]));
+ const end=new Date();end.setHours(0,0,0,0);
+ const first=new Date(end);first.setDate(first.getDate()-((end.getDay()+6)%7)-7*(HEAT_WEEKS-1));
+ const weeks:Array<Array<{key:string;total:number}>>=[];
+ const cursor=new Date(first);
+ for(let w=0;w<HEAT_WEEKS;w++){
+  const week:Array<{key:string;total:number}>=[];
+  for(let d=0;d<7;d++){
+   const key=cursor.getFullYear()+'-'+String(cursor.getMonth()+1).padStart(2,'0')+'-'+String(cursor.getDate()).padStart(2,'0');
+   week.push({key,total:cursor<=end?(byDay.get(key)??0):-1});
+   cursor.setDate(cursor.getDate()+1);
+  }
+  weeks.push(week);
+ }
  return <>
+  <p className="field-hint">{t('settings.statsHeatmap')}</p>
+  <div className="heatmap">
+   {weeks.map((week,wi)=><div className="hm-week" key={wi}>
+    {week.map(c=>c.total<0
+     ?<i key={c.key} className="hm-cell future"/>
+     :<i key={c.key} className="hm-cell" data-l={c.total?Math.min(4,Math.ceil(c.total/maxTokens*4)):0}
+       title={c.key+': '+c.total.toLocaleString()+t('messages.tokens')}/>)}
+   </div>)}
+  </div>
   <div className="stats-bars">
    {days.slice(-30).map(d=>{
     const total=d.promptTokens+d.completionTokens;
@@ -140,7 +170,7 @@ function StatsView(){
     </div>;
    })}
   </div>
-  {priced&&<p className="field-hint">Costs are estimates from the provider price lists.</p>}
+  {priced&&<p className="field-hint">{t('settings.costEstimateHint')}</p>}
  </>;
 }
 
@@ -149,41 +179,43 @@ function StatsView(){
 function McpAddRow({servers,onAdd}:{servers:McpServer[];onAdd:(s:McpServer)=>void}){
  const [name,setName]=useState('');
  const [command,setCommand]=useState('');
+ const t=useT();
  const full=servers.length>=5;
  return <div className="inline-row">
-  <input value={name} onChange={e=>setName(e.target.value)} placeholder="Name (e.g. filesystem)" aria-label="MCP server name" maxLength={60} disabled={full}/>
-  <input value={command} onChange={e=>setCommand(e.target.value)} placeholder="Command (e.g. npx -y @modelcontextprotocol/server-filesystem .)" aria-label="MCP server command" maxLength={300} disabled={full}/>
-  <button className="secondary-button" disabled={full||!name.trim()||!command.trim()} onClick={()=>{onAdd({id:crypto.randomUUID(),name:name.trim(),command:command.trim()});setName('');setCommand('');}}><Plus size={14}/> Add</button>
+  <input value={name} onChange={e=>setName(e.target.value)} placeholder={t('settings.mcpNamePh')} aria-label={t('settings.mcpNameAria')} maxLength={60} disabled={full}/>
+  <input value={command} onChange={e=>setCommand(e.target.value)} placeholder={t('settings.mcpCommandPh')} aria-label={t('settings.mcpCommandAria')} maxLength={300} disabled={full}/>
+  <button className="secondary-button" disabled={full||!name.trim()||!command.trim()} onClick={()=>{onAdd({id:crypto.randomUUID(),name:name.trim(),command:command.trim()});setName('');setCommand('');}}><Plus size={14}/> {t('settings.add')}</button>
  </div>;
 }
 
 function PersonaEditor({persona,providers,onSave,onCancel}:{persona:Persona;providers:ProviderConfig[];onSave:(p:Persona)=>void;onCancel:()=>void}){
  const [draft,setDraft]=useState<Persona>(persona);
+ const t=useT();
  const set=<K extends keyof Persona>(k:K,v:Persona[K])=>setDraft(d=>({...d,[k]:v}));
  return <div className="persona-editor">
-  <Field label="Name"><input value={draft.name} onChange={e=>set('name',e.target.value)} placeholder="Code reviewer" autoFocus/></Field>
-  <Field label="Color"><div className="accent-options">{PERSONA_COLORS.map(c=>
-   <button key={c} className={'accent-dot'+(draft.color===c?' chosen':'')} style={{background:c}} aria-label={'Color '+c} onClick={()=>set('color',c)}/>)}</div></Field>
-  <Field label="System prompt"><textarea rows={5} value={draft.prompt} onChange={e=>set('prompt',e.target.value)} placeholder="You are a senior code reviewer. Focus on…"/></Field>
-  <Field label={'Temperature override · '+(draft.temperature===undefined?'off':draft.temperature.toFixed(1))}>
+  <Field label={t('settings.name')}><input value={draft.name} onChange={e=>set('name',e.target.value)} placeholder={t('settings.personaNamePh')} autoFocus/></Field>
+  <Field label={t('settings.color')}><div className="accent-options">{PERSONA_COLORS.map(c=>
+   <button key={c} className={'accent-dot'+(draft.color===c?' chosen':'')} style={{background:c}} aria-label={t('settings.colorAria',{name:c})} onClick={()=>set('color',c)}/>)}</div></Field>
+  <Field label={t('settings.systemPrompt')}><textarea rows={5} value={draft.prompt} onChange={e=>set('prompt',e.target.value)} placeholder={t('settings.personaPromptPh')}/></Field>
+  <Field label={t('settings.temperatureOverride',{value:draft.temperature===undefined?t('settings.tempOff'):draft.temperature.toFixed(1)})}>
    <div className="inline-row">
     <input type="range" min="0" max="2" step="0.1" value={draft.temperature??0.7} onChange={e=>set('temperature',Number(e.target.value))} disabled={draft.temperature===undefined}/>
-    <button className="secondary-button" onClick={()=>set('temperature',draft.temperature===undefined?0.7:undefined)}>{draft.temperature===undefined?'Enable':'Use default'}</button>
+    <button className="secondary-button" onClick={()=>set('temperature',draft.temperature===undefined?0.7:undefined)}>{draft.temperature===undefined?t('settings.enable'):t('settings.useDefault')}</button>
    </div>
   </Field>
-  <Field label="Provider override">
+  <Field label={t('settings.providerOverride')}>
    <select value={draft.providerId??''} onChange={e=>{const v=e.target.value as ProviderId|'';setDraft(d=>({...d,providerId:v||undefined,model:v?d.model:undefined}));}}>
-    <option value="">Keep current</option>
+    <option value="">{t('settings.keepCurrent')}</option>
     {providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
    </select>
   </Field>
-  {draft.providerId&&<Field label="Model override">
-   <input value={draft.model??''} onChange={e=>set('model',e.target.value||undefined)} placeholder="Model ID (optional)" list="persona-models"/>
+  {draft.providerId&&<Field label={t('settings.modelOverride')}>
+   <input value={draft.model??''} onChange={e=>set('model',e.target.value||undefined)} placeholder={t('settings.modelIdOptionalPh')} list="persona-models"/>
    <datalist id="persona-models">{(providers.find(p=>p.id===draft.providerId)?.models??[]).map(m=><option key={m} value={m}/>)}</datalist>
   </Field>}
   <div className="settings-actions">
-   <button className="secondary-button" onClick={onCancel}>Cancel</button>
-   <button className="primary-button" disabled={!draft.name.trim()||!draft.prompt.trim()} onClick={()=>onSave({...draft,name:draft.name.trim()})}>Save persona</button>
+   <button className="secondary-button" onClick={onCancel}>{t('settings.cancel')}</button>
+   <button className="primary-button" disabled={!draft.name.trim()||!draft.prompt.trim()} onClick={()=>onSave({...draft,name:draft.name.trim()})}>{t('settings.savePersona')}</button>
   </div>
  </div>;
 }
@@ -199,6 +231,7 @@ export default function SettingsModal(props:Props){
  const [usage,setUsage]=useState<UsageSummary|null>(null);
  const [editingPersona,setEditingPersona]=useState<Persona|null>(null);
  const [editingTemplate,setEditingTemplate]=useState<PromptTemplate|null>(null);
+ const t=useT();
  const provider=providers.find(p=>p.id===providerId);
  const pinned=PINNED_IDS.has(providerId);
  // Any custom endpoint (the legacy 'custom' or a generated 'custom-<hex>') is fully
@@ -229,11 +262,11 @@ export default function SettingsModal(props:Props){
   if(!provider)return;
   const name=isCustom?(providerName.trim()||provider.name):provider.name;
   const updated=await persist({...provider,name,baseUrl:pinned?provider.baseUrl:(baseUrl||provider.baseUrl)},apiKey||undefined);
-  if(updated){onNotice('Saved securely');if(updated.models[0])onModel(updated.models[0]);}
+  if(updated){onNotice(t('settings.savedSecurely'));if(updated.models[0])onModel(updated.models[0]);}
  }
  async function addProvider(){
   const created=await onCreateProvider();
-  if(created){setApiKey('');setBaseUrl('');setProviderName('');onNotice('Custom provider added — set its URL and key below');}
+  if(created){setApiKey('');setBaseUrl('');setProviderName('');onNotice(t('settings.customProviderAdded'));}
  }
  async function addModels(){
   if(!provider)return;
@@ -241,7 +274,7 @@ export default function SettingsModal(props:Props){
   const models=Array.from(new Set([...provider.models,...values]));
   if(models.length===provider.models.length){setModelInput('');return;}
   const saved=await persist({...provider,models},apiKey||undefined);
-  if(saved){setModelInput('');onModel(saved.models.at(-1)??'');onNotice('Model added');}
+  if(saved){setModelInput('');onModel(saved.models.at(-1)??'');onNotice(t('settings.modelAdded'));}
  }
  async function removeModel(value:string){
   if(!provider)return;
@@ -251,182 +284,188 @@ export default function SettingsModal(props:Props){
  }
 
  return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)onClose();}}>
- <section className="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
-  <header><div><div className="eyebrow">PREFERENCES</div><h2>Settings</h2></div>
-   <button onClick={onClose} aria-label="Close settings"><X size={17}/></button></header>
+ <section className="settings-modal" role="dialog" aria-modal="true" aria-label={t('settings.dialogAria')}>
+  <header><div><div className="eyebrow">{t('settings.eyebrow')}</div><h2>{t('settings.title')}</h2></div>
+   <button onClick={onClose} aria-label={t('settings.closeAria')}><X size={17}/></button></header>
   <div className="settings-layout">
-   <nav className="settings-nav">{(['providers','appearance','agents','stats','data'] as const).map(t=>
-    <button key={t} className={tab===t?'active':''} onClick={()=>onTab(t)}>
-     {t==='providers'?<Sparkles size={15}/>:t==='appearance'?<Sun size={15}/>:t==='agents'?<Bot size={15}/>:t==='stats'?<BarChart3 size={15}/>:<Archive size={15}/>}
-     <span>{t==='providers'?'Providers':t==='appearance'?'Appearance':t==='agents'?'Personas':t==='stats'?'Statistics':'Data & privacy'}</span>
+   <nav className="settings-nav">{(['providers','appearance','agents','stats','data'] as const).map(tabId=>
+    <button key={tabId} className={tab===tabId?'active':''} onClick={()=>onTab(tabId)}>
+     {tabId==='providers'?<Sparkles size={15}/>:tabId==='appearance'?<Sun size={15}/>:tabId==='agents'?<Bot size={15}/>:tabId==='stats'?<BarChart3 size={15}/>:<Archive size={15}/>}
+     <span>{tabId==='providers'?t('settings.tabProviders'):tabId==='appearance'?t('settings.tabAppearance'):tabId==='agents'?t('settings.tabAgents'):tabId==='stats'?t('settings.tabStats'):t('settings.tabData')}</span>
     </button>)}</nav>
    <div className="settings-page">
     {tab==='providers'?<>
-     <h3>AI providers</h3>
-     <p>Connect an API key to chat with your models. Keys are encrypted with Windows DPAPI. Local servers (Ollama, LM Studio) may use http://localhost and need no key.</p>
+     <h3>{t('settings.providersTitle')}</h3>
+     <p>{t('settings.providersIntro')}</p>
      <div className="provider-grid">{providers.map(p=>
       <button key={p.id} className={'provider-option '+(providerId===p.id?'chosen':'')}
        onClick={()=>{onProviderSelect(p.id);setBaseUrl(p.baseUrl);setProviderName(p.name);if(p.models[0])onModel(p.models[0]);}}>
        <ProviderIcon id={p.id} name={p.name}/>{p.name}
-       {p.hasKey&&<i className="key-dot" title="API key saved">●</i>}
+       {p.hasKey&&<i className="key-dot" title={t('settings.apiKeySaved')}>●</i>}
        {providerId===p.id&&<Check size={13}/>}
       </button>)}
-      <button className="provider-option provider-add" onClick={()=>void addProvider()} title="Add a custom OpenAI-compatible endpoint">+ Add provider</button>
+      <button className="provider-option provider-add" onClick={()=>void addProvider()} title={t('settings.addProviderTitle')}>{t('settings.addProvider')}</button>
      </div>
-     {isCustom&&<><h3>Custom provider</h3>
-      <Field label="Provider name"><input value={providerName||provider?.name||''} onChange={e=>setProviderName(e.target.value)} placeholder="My provider"/></Field></>}
-     <Field label={'API key'+(provider?.hasKey?' (saved)':'')}>
-      <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={provider?.hasKey?'Leave blank to keep the current key':'Paste your API key'} autoComplete="off"/>
+     {isCustom&&<><h3>{t('settings.customProviderTitle')}</h3>
+      <Field label={t('settings.providerName')}><input value={providerName||provider?.name||''} onChange={e=>setProviderName(e.target.value)} placeholder={t('settings.providerNamePh')}/></Field></>}
+     <Field label={t('settings.apiKey')+(provider?.hasKey?t('settings.apiKeySavedSuffix'):'')}>
+      <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={provider?.hasKey?t('settings.apiKeyKeepPh'):t('settings.apiKeyPastePh')} autoComplete="off"/>
      </Field>
-     <Field label="Base URL">
+     <Field label={t('settings.baseUrl')}>
       {pinned
-       ?<div className="readonly-url" title="The endpoint of a built-in provider is fixed">
+       ?<div className="readonly-url" title={t('settings.baseUrlFixedTitle')}>
          <span>{provider?.baseUrl}</span>
-         <button type="button" className="link-button" onClick={()=>{onProviderSelect('custom');setBaseUrl('');setProviderName('');}}>Use a custom endpoint instead</button>
+         <button type="button" className="link-button" onClick={()=>{onProviderSelect('custom');setBaseUrl('');setProviderName('');}}>{t('settings.useCustomEndpoint')}</button>
         </div>
        :<input value={baseUrl||provider?.baseUrl||''} onChange={e=>setBaseUrl(e.target.value)} placeholder="https://api.example.com/v1 or http://127.0.0.1:11434/v1"/>}
      </Field>
      <div className="settings-actions">
-      <button className="secondary-button" onClick={onTestProvider}>Test connection</button>
-      <button className="secondary-button" disabled={refreshingModels} onClick={()=>void onRefreshModels()}>{refreshingModels?'Loading…':'Refresh models'}</button>
-      <button className="primary-button" disabled={busy} onClick={()=>void saveProvider()}>{isCustom?'Save custom provider':'Save provider'}</button>
-      {isCustom&&provider&&<button className="danger-button" disabled={busy} onClick={()=>{void onRemoveProvider(providerId);onProviderSelect('openai');onNotice('Custom provider removed');}}>Remove</button>}
+      <button className="secondary-button" onClick={onTestProvider}>{t('settings.testConnection')}</button>
+      <button className="secondary-button" disabled={refreshingModels} onClick={()=>void onRefreshModels()}>{refreshingModels?t('settings.loading'):t('settings.refreshModels')}</button>
+      <button className="primary-button" disabled={busy} onClick={()=>void saveProvider()}>{isCustom?t('settings.saveCustomProvider'):t('settings.saveProvider')}</button>
+      {isCustom&&provider&&<button className="danger-button" disabled={busy} onClick={()=>{void onRemoveProvider(providerId);onProviderSelect('openai');onNotice(t('settings.customProviderRemoved'));}}>{t('settings.remove')}</button>}
      </div>
-     <div className="models-heading"><div><h3>Available models</h3><p>Manually add model IDs or refresh from the provider API.</p></div></div>
+     <div className="models-heading"><div><h3>{t('settings.availableModels')}</h3><p>{t('settings.modelsIntro')}</p></div></div>
      <div className="model-list">{(provider?.models??[]).map(item=>
       <div className="model-row" key={item}><span>{item}</span>
-       <button title={'Remove '+item} aria-label={'Remove '+item} onClick={()=>void removeModel(item)}><X size={13}/></button></div>)}
-      {!provider?.models.length&&<div className="models-empty">No models yet. Add a model ID below.</div>}
+       <button title={t('settings.removeName',{name:item})} aria-label={t('settings.removeName',{name:item})} onClick={()=>void removeModel(item)}><X size={13}/></button></div>)}
+      {!provider?.models.length&&<div className="models-empty">{t('settings.noModels')}</div>}
      </div>
      <div className="model-add">
       <input value={modelInput} onChange={e=>setModelInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();void addModels();}}}
-       placeholder="Model ID (e.g. my-model-v1)" aria-label="Model ID"/>
-      <button className="primary-button" onClick={()=>void addModels()}>Add model</button>
+       placeholder={t('settings.modelIdPh')} aria-label={t('settings.modelIdAria')}/>
+      <button className="primary-button" onClick={()=>void addModels()}>{t('settings.addModel')}</button>
      </div>
     </>:tab==='appearance'?<>
-     <h3>Appearance</h3><p>Make Lumen feel at home on your desktop.</p>
+     <h3>{t('settings.appearanceTitle')}</h3><p>{t('settings.appearanceIntro')}</p>
      <div className="theme-options">
-      <button className={settings.theme==='dark'?'chosen':''} onClick={()=>void onPref('theme','dark')}><Moon size={18}/><b>Dark</b><small>Easy on the eyes</small></button>
-      <button className={settings.theme==='light'?'chosen':''} onClick={()=>void onPref('theme','light')}><Sun size={18}/><b>Light</b><small>Bright and clear</small></button>
+      <button className={settings.theme==='dark'?'chosen':''} onClick={()=>void onPref('theme','dark')}><Moon size={18}/><b>{t('settings.themeDark')}</b><small>{t('settings.themeDarkHint')}</small></button>
+      <button className={settings.theme==='light'?'chosen':''} onClick={()=>void onPref('theme','light')}><Sun size={18}/><b>{t('settings.themeLight')}</b><small>{t('settings.themeLightHint')}</small></button>
      </div>
-     <Field label="Accent color"><div className="accent-options">{ACCENTS.map(a=>
-      <button key={a} className={'accent-dot accent-'+a+(settings.accent===a?' chosen':'')} aria-label={a+' accent'} title={a} onClick={()=>void onPref('accent',a as Accent)}/>)}</div></Field>
-     <Field label="Theme preset"><div className="preset-options">{THEME_PRESETS.map(p=>
-      <button key={p} className={'preset-swatch preset-'+p+(settings.themePreset===p?' chosen':'')} onClick={()=>void onPref('themePreset',p)} aria-label={p+' theme preset'}><i/><b>{p[0].toUpperCase()+p.slice(1)}</b></button>)}</div></Field>
-     <Field label={'Temperature · '+settings.temperature.toFixed(1)}><input type="range" min="0" max="2" step="0.1" value={settings.temperature} onChange={e=>void onPref('temperature',Number(e.target.value))}/></Field>
-     <Field label="Max response tokens"><input type="number" min="128" max="32000" value={settings.maxTokens} onChange={e=>void onPref('maxTokens',Number(e.target.value))}/></Field>
-     <Field label="Top P"><input type="number" min="0" max="1" step="0.05" value={settings.topP} onChange={e=>void onPref('topP',Number(e.target.value))}/></Field>
-     <Field label="Reasoning effort" hint="Thinking budget for reasoning models: OpenAI o-series/gpt-5, Claude 3.7+/4+, Gemini 2.5+, reasoning models via OpenRouter. 'Provider default' changes nothing.">
+     <Field label={t('settings.accentColor')}><div className="accent-options">{ACCENTS.map(a=>
+      <button key={a} className={'accent-dot accent-'+a+(settings.accent===a?' chosen':'')} aria-label={t('settings.accentAria',{name:a})} title={a} onClick={()=>void onPref('accent',a as Accent)}/>)}</div></Field>
+     <Field label={t('settings.themePreset')}><div className="preset-options">{THEME_PRESETS.map(p=>
+      <button key={p} className={'preset-swatch preset-'+p+(settings.themePreset===p?' chosen':'')} onClick={()=>void onPref('themePreset',p)} aria-label={t('settings.themePresetAria',{name:p})}><i/><b>{p[0].toUpperCase()+p.slice(1)}</b></button>)}</div></Field>
+     <Field label={t('settings.language')}>
+      <select value={settings.language} onChange={e=>void onPref('language',e.target.value as Prefs['language'])}>
+       <option value="en">English</option>
+       <option value="ru">Русский</option>
+      </select>
+     </Field>
+     <Field label={t('settings.temperature',{value:settings.temperature.toFixed(1)})}><input type="range" min="0" max="2" step="0.1" value={settings.temperature} onChange={e=>void onPref('temperature',Number(e.target.value))}/></Field>
+     <Field label={t('settings.maxTokens')}><input type="number" min="128" max="32000" value={settings.maxTokens} onChange={e=>void onPref('maxTokens',Number(e.target.value))}/></Field>
+     <Field label={t('settings.topP')}><input type="number" min="0" max="1" step="0.05" value={settings.topP} onChange={e=>void onPref('topP',Number(e.target.value))}/></Field>
+     <Field label={t('settings.reasoningEffort')} hint={t('settings.reasoningEffortHint')}>
       <div className="density-picker">{REASONING_EFFORTS.map(eff=>
-       <button key={eff} className={settings.reasoningEffort===eff?'active':''} onClick={()=>void onPref('reasoningEffort',eff)} aria-pressed={settings.reasoningEffort===eff}>{eff==='off'?'Provider default':eff[0].toUpperCase()+eff.slice(1)}</button>)}
+       <button key={eff} className={settings.reasoningEffort===eff?'active':''} onClick={()=>void onPref('reasoningEffort',eff)} aria-pressed={settings.reasoningEffort===eff}>{eff==='off'?t('settings.reasoningDefault'):eff[0].toUpperCase()+eff.slice(1)}</button>)}
       </div>
      </Field>
-     <Field label="System prompt"><textarea rows={4} value={settings.systemPrompt} onChange={e=>void onPref('systemPrompt',e.target.value)}/></Field>
-     <Field label="Density" hint="How much air the interface has — compact fits more text on screen.">
+     <Field label={t('settings.systemPrompt')}><textarea rows={4} value={settings.systemPrompt} onChange={e=>void onPref('systemPrompt',e.target.value)}/></Field>
+     <Field label={t('settings.density')} hint={t('settings.densityHint')}>
       <div className="density-picker">{DENSITIES.map(d=>
        <button key={d} className={settings.density===d?'active':''} onClick={()=>void onPref('density',d)} aria-pressed={settings.density===d}>{d[0].toUpperCase()+d.slice(1)}</button>)}
       </div>
      </Field>
-     <Field label="Default workspace folder">
+     <Field label={t('settings.defaultWorkspace')}>
       <div className="inline-row">
-       <input value={settings.defaultWorkspace} readOnly placeholder="None — attach per chat from the toolbar" aria-label="Default workspace folder"/>
-       <button className="secondary-button" onClick={()=>{void window.lumen.app.pickFolder('Choose the default workspace folder').then(p=>{if(p)void onPref('defaultWorkspace',p);});}}>Browse…</button>
-       {settings.defaultWorkspace&&<button className="secondary-button" onClick={()=>void onPref('defaultWorkspace','')}>Clear</button>}
+       <input value={settings.defaultWorkspace} readOnly placeholder={t('settings.defaultWorkspacePh')} aria-label={t('settings.defaultWorkspace')}/>
+       <button className="secondary-button" onClick={()=>{void window.lumen.app.pickFolder(t('settings.pickWorkspace')).then(p=>{if(p)void onPref('defaultWorkspace',p);});}}>{t('settings.browse')}</button>
+       {settings.defaultWorkspace&&<button className="secondary-button" onClick={()=>void onPref('defaultWorkspace','')}>{t('settings.clear')}</button>}
       </div>
-      <p className="field-hint">Chats without their own workspace use this folder for file tools. Writes still ask for approval.</p>
+      <p className="field-hint">{t('settings.workspaceHint')}</p>
      </Field>
-     <Field label="Custom CSS">
+     <Field label={t('settings.customCss')}>
       <div className="inline-row">
-       <input value={settings.customCss?settings.customCss.length+' characters loaded':''} readOnly placeholder="No custom styles" aria-label="Custom CSS status"/>
+       <input value={settings.customCss?t('settings.cssCharsLoaded',{n:settings.customCss.length}):''} readOnly placeholder={t('settings.noCustomCss')} aria-label={t('settings.customCssAria')}/>
        <button className="secondary-button" onClick={()=>{
         const input=document.createElement('input');input.type='file';input.accept='.css,text/css';
-        input.onchange=()=>{const f=input.files?.[0];if(!f)return;if(f.size>100*1024){onNotice('CSS file is too large (max 100 KB)');return;}void f.text().then(t=>{void onPref('customCss',t);onNotice('Custom theme applied');});};
+        input.onchange=()=>{const f=input.files?.[0];if(!f)return;if(f.size>100*1024){onNotice(t('settings.cssTooLarge'));return;}void f.text().then(css=>{void onPref('customCss',css);onNotice(t('settings.customThemeApplied'));});};
         input.click();
-       }}>Load .css…</button>
-       {settings.customCss&&<button className="secondary-button" onClick={()=>void onPref('customCss','')}>Remove</button>}
+       }}>{t('settings.loadCss')}</button>
+       {settings.customCss&&<button className="secondary-button" onClick={()=>void onPref('customCss','')}>{t('settings.remove')}</button>}
       </div>
-      <p className="field-hint">A .css file injected into the app window — restyle anything. It cannot access your data.</p>
+      <p className="field-hint">{t('settings.customCssHint')}</p>
      </Field>
-     <h3><Monitor size={14}/> System</h3>
-     <ToggleRow title="Keep running in the tray" hint="Closing the window hides it; quit from the tray icon." checked={settings.minimizeToTray} onChange={v=>void onPref('minimizeToTray',v)}/>
-     <ToggleRow title="Launch at sign-in" hint="Start Lumen automatically when you log into Windows." checked={settings.autoStart} onChange={v=>void onPref('autoStart',v)}/>
-     <ToggleRow title="Desktop notifications" hint="Notify when a response finishes while the window is unfocused or hidden." checked={settings.notifications} onChange={v=>void onPref('notifications',v)}/>
-     <h3><Keyboard size={14}/> Keyboard shortcuts</h3>
-     <p>Click a shortcut and press a new chord. It must include Ctrl or Alt.</p>
+     <h3><Monitor size={14}/> {t('settings.systemTitle')}</h3>
+     <ToggleRow title={t('settings.trayTitle')} hint={t('settings.trayHint')} checked={settings.minimizeToTray} onChange={v=>void onPref('minimizeToTray',v)}/>
+     <ToggleRow title={t('settings.autoStartTitle')} hint={t('settings.autoStartHint')} checked={settings.autoStart} onChange={v=>void onPref('autoStart',v)}/>
+     <ToggleRow title={t('settings.notificationsTitle')} hint={t('settings.notificationsHint')} checked={settings.notifications} onChange={v=>void onPref('notifications',v)}/>
+     <h3><Keyboard size={14}/> {t('settings.hotkeysTitle')}</h3>
+     <p>{t('settings.hotkeysIntro')}</p>
      {(Object.keys(HOTKEY_LABELS) as Array<keyof HotkeyMap>).map(k=>
-      <HotkeyField key={k} label={HOTKEY_LABELS[k]} value={settings.hotkeys[k]}
+      <HotkeyField key={k} label={t(HOTKEY_LABELS[k])} value={settings.hotkeys[k]}
        onChange={v=>void onPref('hotkeys',{...settings.hotkeys,[k]:v})} onInvalid={onNotice}/>)}
     </>:tab==='agents'?<>
-     <h3>Personas</h3><p>Named presets — a system prompt with optional temperature, provider and model overrides. Pick one in the composer; it applies to new messages.</p>
+     <h3>{t('settings.personasTitle')}</h3><p>{t('settings.personasIntro')}</p>
      {editingPersona
       ?<PersonaEditor persona={editingPersona} providers={providers} onCancel={()=>setEditingPersona(null)}
         onSave={p=>{
          const list=settings.personas.filter(x=>x.id!==p.id);
-         void onPref('personas',[...list,p]);setEditingPersona(null);onNotice('Persona saved');
+         void onPref('personas',[...list,p]);setEditingPersona(null);onNotice(t('settings.personaSaved'));
         }}/>
       :<>
        <div className="model-list">
         {settings.personas.map(p=><div className="persona-row" key={p.id}>
          <span className="provider-dot" style={{background:p.color}} aria-hidden="true"/>
          <span className="persona-name">{p.name}</span>
-         {settings.personaId===p.id&&<small className="persona-active">active</small>}
-         <button title={'Edit '+p.name} aria-label={'Edit '+p.name} onClick={()=>setEditingPersona(p)}><Pencil size={13}/></button>
-         <button title={'Delete '+p.name} aria-label={'Delete '+p.name} onClick={()=>{
+         {settings.personaId===p.id&&<small className="persona-active">{t('settings.personaActive')}</small>}
+         <button title={t('settings.editName',{name:p.name})} aria-label={t('settings.editName',{name:p.name})} onClick={()=>setEditingPersona(p)}><Pencil size={13}/></button>
+         <button title={t('settings.deleteName',{name:p.name})} aria-label={t('settings.deleteName',{name:p.name})} onClick={()=>{
           void onPref('personas',settings.personas.filter(x=>x.id!==p.id));
           if(settings.personaId===p.id)void onPref('personaId','');
          }}><Trash2 size={13}/></button>
         </div>)}
-        {!settings.personas.length&&<div className="models-empty">No personas yet. Create one to reuse a prompt in one click.</div>}
+        {!settings.personas.length&&<div className="models-empty">{t('settings.noPersonas')}</div>}
        </div>
        <div className="settings-actions">
-        <button className="primary-button" onClick={()=>setEditingPersona(blankPersona())}><Plus size={14}/> New persona</button>
+        <button className="primary-button" onClick={()=>setEditingPersona(blankPersona())}><Plus size={14}/> {t('settings.newPersona')}</button>
        </div>
       </>}
-     <h3><LayoutTemplate size={14}/> Prompt templates</h3>
-     <p>Reusable prompts; {'{{input}}'} is replaced by your current draft. Pick one from the composer's template button or with /template N.</p>
+     <h3><LayoutTemplate size={14}/> {t('settings.templatesTitle')}</h3>
+     <p>{t('settings.templatesIntro').split('{{input}}')[0]}<code>{'{{input}}'}</code>{t('settings.templatesIntro').split('{{input}}')[1]}</p>
      {editingTemplate
       ?<TemplateEditor template={editingTemplate} onCancel={()=>setEditingTemplate(null)}
-        onSave={t=>{
-         const list=settings.templates.filter(x=>x.id!==t.id);
-         void onPref('templates',[...list,t]);setEditingTemplate(null);onNotice('Template saved');
+        onSave={tpl=>{
+         const list=settings.templates.filter(x=>x.id!==tpl.id);
+         void onPref('templates',[...list,tpl]);setEditingTemplate(null);onNotice(t('settings.templateSaved'));
         }}/>
       :<>
        <div className="model-list">
-        {settings.templates.map(t=><div className="persona-row" key={t.id}>
+        {settings.templates.map(tpl=><div className="persona-row" key={tpl.id}>
          <LayoutTemplate size={13}/>
-         <span className="persona-name">{t.name}</span>
-         <small className="persona-active">{t.text.slice(0,40)}{t.text.length>40?'…':''}</small>
-         <button title={'Edit '+t.name} aria-label={'Edit '+t.name} onClick={()=>setEditingTemplate(t)}><Pencil size={13}/></button>
-         <button title={'Delete '+t.name} aria-label={'Delete '+t.name} onClick={()=>void onPref('templates',settings.templates.filter(x=>x.id!==t.id))}><Trash2 size={13}/></button>
+         <span className="persona-name">{tpl.name}</span>
+         <small className="persona-active">{tpl.text.slice(0,40)}{tpl.text.length>40?'…':''}</small>
+         <button title={t('settings.editName',{name:tpl.name})} aria-label={t('settings.editName',{name:tpl.name})} onClick={()=>setEditingTemplate(tpl)}><Pencil size={13}/></button>
+         <button title={t('settings.deleteName',{name:tpl.name})} aria-label={t('settings.deleteName',{name:tpl.name})} onClick={()=>void onPref('templates',settings.templates.filter(x=>x.id!==tpl.id))}><Trash2 size={13}/></button>
         </div>)}
-        {!settings.templates.length&&<div className="models-empty">No templates yet. Create one to reuse a prompt in one click.</div>}
+        {!settings.templates.length&&<div className="models-empty">{t('settings.noTemplates')}</div>}
        </div>
        <div className="settings-actions">
-        <button className="primary-button" onClick={()=>setEditingTemplate(blankTemplate())}><Plus size={14}/> New template</button>
+        <button className="primary-button" onClick={()=>setEditingTemplate(blankTemplate())}><Plus size={14}/> {t('settings.newTemplate')}</button>
        </div>
       </>}
-      <h3><Server size={14}/> MCP servers</h3>
-      <p>External tool servers (Model Context Protocol) launched over stdio — e.g. <code>npx -y @modelcontextprotocol/server-filesystem C:\projects</code>. Their tools become available to every model (shown as mcp:… cards). Max 5.</p>
+      <h3><Server size={14}/> {t('settings.mcpTitle')}</h3>
+      <p>{t('settings.mcpIntro1')}<code>npx -y @modelcontextprotocol/server-filesystem C:\projects</code>{t('settings.mcpIntro2')}</p>
       <div className="model-list">
        {settings.mcpServers.map(s=><div className="persona-row" key={s.id}>
         <Server size={13}/>
         <span className="persona-name">{s.name}</span>
         <small className="persona-active">{s.command}</small>
-        <button title={'Remove '+s.name} aria-label={'Remove '+s.name} onClick={()=>void onPref('mcpServers',settings.mcpServers.filter(x=>x.id!==s.id))}><Trash2 size={13}/></button>
+        <button title={t('settings.removeName',{name:s.name})} aria-label={t('settings.removeName',{name:s.name})} onClick={()=>void onPref('mcpServers',settings.mcpServers.filter(x=>x.id!==s.id))}><Trash2 size={13}/></button>
        </div>)}
-       {!settings.mcpServers.length&&<div className="models-empty">No MCP servers configured.</div>}
+       {!settings.mcpServers.length&&<div className="models-empty">{t('settings.noMcp')}</div>}
       </div>
-      <McpAddRow servers={settings.mcpServers} onAdd={s=>{void onPref('mcpServers',[...settings.mcpServers,s]);onNotice('MCP server added — its tools are available from the next message');}}/>
+      <McpAddRow servers={settings.mcpServers} onAdd={s=>{void onPref('mcpServers',[...settings.mcpServers,s]);onNotice(t('settings.mcpAdded'));}}/>
     </>:tab==='stats'?<>
-     <h3>Statistics</h3><p>Token usage per day across all providers (assistant replies).</p>
+     <h3>{t('settings.statsTitle')}</h3><p>{t('settings.statsIntro')}</p>
      <StatsView/>
     </>:<>
-     <h3>Data & privacy</h3><p>Your conversations and preferences stay on this device.</p>
-     <div className="privacy-row"><Shield size={17}/><div><b>Local-first storage</b><small>Chat history stored in local SQLite.</small></div><Check size={14}/></div>
-     <div className="privacy-row"><Shield size={17}/><div><b>Encrypted API keys</b><small>Protected by Windows secure storage (DPAPI).</small></div><Check size={14}/></div>
+     <h3>{t('settings.dataTitle')}</h3><p>{t('settings.dataIntro')}</p>
+     <div className="privacy-row"><Shield size={17}/><div><b>{t('settings.localFirst')}</b><small>{t('settings.localFirstHint')}</small></div><Check size={14}/></div>
+     <div className="privacy-row"><Shield size={17}/><div><b>{t('settings.encryptedKeys')}</b><small>{t('settings.encryptedKeysHint')}</small></div><Check size={14}/></div>
      {usage&&<div className="usage-summary">
-      <h4>Lifetime usage</h4>
+      <h4>{t('settings.lifetimeUsage')}</h4>
       {(()=>{
        // $ estimates come from each provider's pricing map; rows without a known
        // price simply don't contribute to the total.
@@ -435,10 +474,10 @@ export default function SettingsModal(props:Props){
        const priced=usage.byModel.some(r=>costOf(r)!==null);
        return <>
         <div className="usage-stats">
-         <div><b>{usage.messages.toLocaleString()}</b><small>replies</small></div>
-         <div><b>{usage.promptTokens.toLocaleString()}</b><small>prompt tokens</small></div>
-         <div><b>{usage.completionTokens.toLocaleString()}</b><small>completion tokens</small></div>
-         {priced&&<div><b>{formatCost(total)}</b><small>estimated cost</small></div>}
+         <div><b>{usage.messages.toLocaleString()}</b><small>{t('settings.replies')}</small></div>
+         <div><b>{usage.promptTokens.toLocaleString()}</b><small>{t('settings.promptTokens')}</small></div>
+         <div><b>{usage.completionTokens.toLocaleString()}</b><small>{t('settings.completionTokens')}</small></div>
+         {priced&&<div><b>{formatCost(total)}</b><small>{t('settings.estimatedCost')}</small></div>}
         </div>
         {usage.byModel.length>0&&<div className="usage-by-model">{usage.byModel.slice(0,8).map((r,i)=>{
          const c=costOf(r);
@@ -449,34 +488,34 @@ export default function SettingsModal(props:Props){
       })()}
      </div>}
      {hasActiveChat&&<div className="settings-actions">
-      <button className="secondary-button" onClick={()=>onExport('md')}>Export Markdown</button>
-      <button className="secondary-button" onClick={()=>onExport('json')}>Export JSON</button>
-      <button className="secondary-button" onClick={()=>onExportPrepared('html')}><FileDown size={14}/> Export HTML</button>
-      <button className="secondary-button" onClick={()=>onExportPrepared('pdf')}><FileDown size={14}/> Export PDF</button>
-      <button className="secondary-button" onClick={onExportZip}><Archive size={14}/> Export zip (md+json+files)</button>
-      <button className="secondary-button" onClick={onOpenDataFolder}><FolderOpen size={14}/> Open data folder</button>
+      <button className="secondary-button" onClick={()=>onExport('md')}>{t('settings.exportMd')}</button>
+      <button className="secondary-button" onClick={()=>onExport('json')}>{t('settings.exportJson')}</button>
+      <button className="secondary-button" onClick={()=>onExportPrepared('html')}><FileDown size={14}/> {t('settings.exportHtml')}</button>
+      <button className="secondary-button" onClick={()=>onExportPrepared('pdf')}><FileDown size={14}/> {t('settings.exportPdf')}</button>
+      <button className="secondary-button" onClick={onExportZip}><Archive size={14}/> {t('settings.exportZip')}</button>
+      <button className="secondary-button" onClick={onOpenDataFolder}><FolderOpen size={14}/> {t('settings.openDataFolder')}</button>
      </div>}
-     <h3><RotateCcw size={14}/> Updates</h3>
-     <p>Updates download automatically in the installed app. A private GitHub repo requires a GH_TOKEN environment variable for the check.</p>
+     <h3><RotateCcw size={14}/> {t('settings.updatesTitle')}</h3>
+     <p>{t('settings.updatesIntro')}</p>
      <div className="settings-actions">
-      <button className="secondary-button" onClick={()=>{void window.lumen.updates.check().then(onNotice);}}>Check for updates</button>
-      <button className="secondary-button" onClick={()=>window.lumen.updates.install()}>Restart &amp; install</button>
+      <button className="secondary-button" onClick={()=>{void window.lumen.updates.check().then(onNotice);}}>{t('settings.checkUpdates')}</button>
+      <button className="secondary-button" onClick={()=>window.lumen.updates.install()}>{t('settings.restartInstall')}</button>
      </div>
-     <h3><Save size={14}/> Backup</h3>
-     <p>Back up the whole database and attachments, or restore from an earlier backup file. Restoring restarts the app.</p>
+     <h3><Save size={14}/> {t('settings.backupTitle')}</h3>
+     <p>{t('settings.backupIntro')}</p>
      <div className="settings-actions">
-      <button className="secondary-button" onClick={()=>{void window.lumen.data.backup().then(p=>onNotice(p?'Backup saved to '+p:'Backup cancelled')).catch(e=>onNotice(e instanceof Error?e.message:'Backup failed'));}}><Save size={14}/> Back up now…</button>
-      <button className="secondary-button" onClick={()=>{void window.lumen.data.restore().catch(e=>onNotice(e instanceof Error?e.message:'Restore failed'));}}><RotateCcw size={14}/> Restore from backup…</button>
+      <button className="secondary-button" onClick={()=>{void window.lumen.data.backup().then(p=>onNotice(p?t('settings.backupSavedTo',{path:p}):t('settings.backupCancelled'))).catch(e=>onNotice(e instanceof Error?e.message:t('settings.backupFailed')));}}><Save size={14}/> {t('settings.backupNow')}</button>
+      <button className="secondary-button" onClick={()=>{void window.lumen.data.restore().catch(e=>onNotice(e instanceof Error?e.message:t('settings.restoreFailed')));}}><RotateCcw size={14}/> {t('settings.restoreBackup')}</button>
      </div>
      {confirmWipe
-      ?<div className="confirm-inline" role="alertdialog" aria-label="Confirm deleting all data">
-        <p>This permanently deletes every conversation, message and setting on this device. Encrypted API keys are kept. This cannot be undone.</p>
+      ?<div className="confirm-inline" role="alertdialog" aria-label={t('settings.confirmWipeAria')}>
+        <p>{t('settings.confirmWipeText')}</p>
         <div className="settings-actions">
-         <button className="secondary-button" onClick={()=>setConfirmWipe(false)}>Cancel</button>
-         <button className="danger-button" onClick={()=>{setConfirmWipe(false);onWipe();onClose();}}><Trash2 size={14}/> Delete everything</button>
+         <button className="secondary-button" onClick={()=>setConfirmWipe(false)}>{t('settings.cancel')}</button>
+         <button className="danger-button" onClick={()=>{setConfirmWipe(false);onWipe();onClose();}}><Trash2 size={14}/> {t('settings.deleteEverything')}</button>
         </div>
        </div>
-      :<button className="danger-button block" onClick={()=>setConfirmWipe(true)}><Trash2 size={14}/> Erase all conversations</button>}
+      :<button className="danger-button block" onClick={()=>setConfirmWipe(true)}><Trash2 size={14}/> {t('settings.eraseAll')}</button>}
     </>}
     {/* Outside the tab ternary on purpose: App suppresses the global toast while this
         modal is open, so a notice rendered only in the providers arm meant Export,

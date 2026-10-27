@@ -1,5 +1,6 @@
 import {marked} from 'marked';
 import DOMPurify from 'dompurify';
+import {t} from './i18n';
 
 marked.setOptions({gfm:true,breaks:true});
 
@@ -13,7 +14,7 @@ marked.use({renderer:{
  code({text,lang}){
   const language=(lang??'').trim().split(/\s+/)[0];
   const label=escapeHtml(language||'text');
-  return `<div class="code-block"><div class="code-head"><span class="code-lang">${label}</span><button type="button" class="code-copy">Copy</button></div><pre><code class="language-${label}">${escapeHtml(text)}</code></pre></div>`;
+  return `<div class="code-block"><div class="code-head"><span class="code-lang">${label}</span><button type="button" class="code-copy">${escapeHtml(t('messages.copy'))}</button></div><pre><code class="language-${label}">${escapeHtml(text)}</code></pre></div>`;
  },
 }});
 

@@ -261,8 +261,7 @@ export function isOpenAiReasoningModel(model: string): boolean {
 export function isGeminiThinkingModel(model: string): boolean { return /gemini-(2\.5|3)/.test(model); }
 export const GEMINI_THINKING_BUDGET = 8192;
 // Claude 3.7+ and the 4-series support extended thinking with an explicit budget.
-// Default provider catalog, seeded into the DB on first run by each shell
-// (Electron main or the Android platform layer).
+// Default provider catalog, seeded into the DB on first run by Electron main.
 export const PROVIDER_DEFAULTS: ProviderConfig[] = [
  {id:'openai',name:'OpenAI',baseUrl:'https://api.openai.com/v1',models:['gpt-4o','gpt-4o-mini','o3-mini']},
  {id:'anthropic',name:'Anthropic',baseUrl:'https://api.anthropic.com/v1',models:['claude-sonnet-4-20250514','claude-3-5-haiku-20241022']},
@@ -411,6 +410,7 @@ const clamp = (value: unknown, min: number, max: number, fallback: number): numb
 export function clampSettings(input: Record<string, unknown>): Record<string, unknown> {
  const out: Record<string, unknown> = {};
  if ('theme' in input) out.theme = input.theme === 'light' ? 'light' : 'dark';
+ if ('language' in input) out.language = input.language === 'ru' ? 'ru' : 'en';
  if ('systemPrompt' in input) out.systemPrompt = typeof input.systemPrompt === 'string' ? input.systemPrompt.slice(0, 32768) : '';
  if ('temperature' in input) out.temperature = clamp(input.temperature, 0, 2, 0.7);
  if ('maxTokens' in input) out.maxTokens = Math.round(clamp(input.maxTokens, 128, 32000, 2048));

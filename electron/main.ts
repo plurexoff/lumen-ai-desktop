@@ -49,19 +49,23 @@ let tray:Tray|null=null;let trayEnabled=false;let quitting=false;
 // (img-src lumen-attachment:). Must be registered before app ready.
 protocol.registerSchemesAsPrivileged([{scheme:'lumen-attachment',privileges:{stream:true}}]);
 
+// Tray menu labels follow the saved UI language; rebuilt when it changes.
+function savedLanguage():'en'|'ru'{try{const v=one("SELECT value FROM settings WHERE key='language'") as {value:string}|undefined;return v&&JSON.parse(v.value)==='ru'?'ru':'en';}catch{return 'en';}}
 function setTray(enabled:boolean){
  trayEnabled=enabled;
- if(enabled&&!tray){
+ if(enabled){
   const icon=windowIcon();if(!icon)return; // no icon -> no tray; retried on next save
+  const ru=savedLanguage()==='ru';
+  if(tray)tray.destroy();
   tray=new Tray(nativeImage.createFromPath(icon));
   tray.setToolTip('Lumen AI');
   tray.on('click',()=>{if(win&&!win.isDestroyed()){win.show();win.focus();}});
   tray.setContextMenu(Menu.buildFromTemplate([
-   {label:'Open Lumen',click:()=>{if(!win||win.isDestroyed())createWindow();else{win.show();win.focus();}}},
+   {label:ru?'Открыть Lumen':'Open Lumen',click:()=>{if(!win||win.isDestroyed())createWindow();else{win.show();win.focus();}}},
    {type:'separator'},
-   {label:'Quit',click:()=>{quitting=true;app.quit();}},
+   {label:ru?'Выйти':'Quit',click:()=>{quitting=true;app.quit();}},
   ]));
- }else if(!enabled&&tray){tray.destroy();tray=null;}
+ }else if(tray){tray.destroy();tray=null;}
 }
 // Attachment files referenced by a set of message rows, for post-delete cleanup.
 function attachmentFiles(messageIds:string[]):string[]{
@@ -181,13 +185,13 @@ function savedBounds(){try{const raw=one("SELECT value FROM settings WHERE key='
 // Match the window background to the saved theme so there is no dark flash when a
 // light-theme user launches.
 function savedTheme():'dark'|'light'{try{const v=one("SELECT value FROM settings WHERE key='theme'") as {value:string}|undefined;return v&&JSON.parse(v.value)==='light'?'light':'dark';}catch{return 'dark';}}
-// Window/taskbar/titlebar icon. The exe's OWN embedded icon is left as stock Electron
-// because the dist:win script passes -c.win.signAndEditExecutable=false, which skips the
-// rcedit step that would rewrite the exe icon+version info — that needs a package.json
-// change we are not making. Setting BrowserWindow.icon still drives the live window,
-// taskbar button and Alt-Tab entry. Prefer the renderer-shipped copy (dist/icon.ico,
-// covered by build.files and present in the packaged app); fall back to build/icon.ico
-// for a dev run before the renderer has been built.
+// Window/taskbar/titlebar icon. The exe's own embedded icon comes from
+// build/icon.ico at package time (electron-builder win.icon), so the installer,
+// shortcuts and Explorer all show the app logo. Setting BrowserWindow.icon drives
+// the live window, taskbar button and Alt-Tab entry. Prefer the renderer-shipped
+// copy (dist/icon.ico, covered by build.files and present in the packaged app);
+// fall back to build/icon.ico for a dev run before the renderer has been built.
+// Regenerate with: node scripts/make-icon.mjs
 function windowIcon():string|undefined{
  for(const rel of [['..','dist','icon.ico'],['..','build','icon.ico']]){
   const p=path.join(__dirname,...rel);
@@ -576,10 +580,11 @@ function initIpc(){
   run('INSERT INTO providers(id,name,base_url,models) VALUES(?,?,?,?)',[id,clean||'Custom provider','', '[]']);
   return{id,name:clean||'Custom provider',baseUrl:'',models:[],hasKey:false} as ProviderConfig;
  });
- ipcMain.handle('settings:get',()=>{const rows=query('SELECT key,value FROM settings') as Array<{key:string;value:string}>;const v=Object.fromEntries(rows.map(x=>[x.key,JSON.parse(x.value)]));return{theme:v.theme??'dark',systemPrompt:v.systemPrompt??'',temperature:v.temperature??0.7,maxTokens:v.maxTokens??2048,topP:v.topP??1,minimizeToTray:v.minimizeToTray===true,autoStart:v.autoStart===true,notifications:v.notifications===true,accent:v.accent??'violet',personas:Array.isArray(v.personas)?v.personas:[],personaId:typeof v.personaId==='string'?v.personaId:'',hotkeys:normalizeHotkeys(v.hotkeys),templates:Array.isArray(v.templates)?v.templates:[],defaultWorkspace:typeof v.defaultWorkspace==='string'?v.defaultWorkspace:'',customCss:typeof v.customCss==='string'?v.customCss:'',compactMode:v.compactMode===true,mcpServers:Array.isArray(v.mcpServers)?v.mcpServers:[],density:v.density==='comfortable'||v.density==='compact'?v.density:(v.compactMode===true?'compact':'default'),themePreset:v.themePreset==='midnight'||v.themePreset==='sepia'?v.themePreset:'default',reasoningEffort:v.reasoningEffort==='low'||v.reasoningEffort==='medium'||v.reasoningEffort==='high'?v.reasoningEffort:'off'};});ipcMain.handle('settings:save',(_e,s:Record<string,unknown>)=>{if(!s||typeof s!=='object')return;const clamped=clampSettings(s);for(const[k,v]of Object.entries(clamped))run('INSERT OR REPLACE INTO settings VALUES(?,?)',[k,JSON.stringify(v)]);if(clamped.theme)nativeTheme.themeSource=clamped.theme as 'dark'|'light';
+ ipcMain.handle('settings:get',()=>{const rows=query('SELECT key,value FROM settings') as Array<{key:string;value:string}>;const v=Object.fromEntries(rows.map(x=>[x.key,JSON.parse(x.value)]));return{theme:v.theme??'dark',language:v.language==='ru'?'ru':'en',systemPrompt:v.systemPrompt??'',temperature:v.temperature??0.7,maxTokens:v.maxTokens??2048,topP:v.topP??1,minimizeToTray:v.minimizeToTray===true,autoStart:v.autoStart===true,notifications:v.notifications===true,accent:v.accent??'violet',personas:Array.isArray(v.personas)?v.personas:[],personaId:typeof v.personaId==='string'?v.personaId:'',hotkeys:normalizeHotkeys(v.hotkeys),templates:Array.isArray(v.templates)?v.templates:[],defaultWorkspace:typeof v.defaultWorkspace==='string'?v.defaultWorkspace:'',customCss:typeof v.customCss==='string'?v.customCss:'',compactMode:v.compactMode===true,mcpServers:Array.isArray(v.mcpServers)?v.mcpServers:[],density:v.density==='comfortable'||v.density==='compact'?v.density:(v.compactMode===true?'compact':'default'),themePreset:v.themePreset==='midnight'||v.themePreset==='sepia'?v.themePreset:'default',reasoningEffort:v.reasoningEffort==='low'||v.reasoningEffort==='medium'||v.reasoningEffort==='high'?v.reasoningEffort:'off'};});ipcMain.handle('settings:save',(_e,s:Record<string,unknown>)=>{if(!s||typeof s!=='object')return;const clamped=clampSettings(s);for(const[k,v]of Object.entries(clamped))run('INSERT OR REPLACE INTO settings VALUES(?,?)',[k,JSON.stringify(v)]);if(clamped.theme)nativeTheme.themeSource=clamped.theme as 'dark'|'light';
   // Side effects of system settings are applied here, not at next launch.
   if('autoStart' in clamped)app.setLoginItemSettings({openAtLogin:clamped.autoStart===true});
   if('minimizeToTray' in clamped)setTray(clamped.minimizeToTray===true);
+  if('language' in clamped&&trayEnabled)setTray(true); // rebuild tray menu in the new language
   if(clamped.hotkeys)registerQuickHotkey(hotkeyToAccelerator((clamped.hotkeys as HotkeyMap).quickChat));});
  ipcMain.handle('providers:test',async(_e,id:ProviderId)=>{if(!isKnownProviderId(id))return{ok:false,message:'Unknown provider'};try{await loadModels(id);return{ok:true,message:'Connection successful'};}catch(e){return{ok:false,message:e instanceof Error?e.message:'Connection failed'};}});ipcMain.handle('providers:models',(_e,id:ProviderId)=>{if(!isKnownProviderId(id))throw new Error('Unknown provider');return loadModels(id);});
  ipcMain.handle('chat:stop',(_e,requestId?:string)=>{if(typeof requestId!=='string'||!requestId)return{stopped:false};const entry=activeRequests.get(requestId);if(!entry)return{stopped:false};entry.controller.abort();return{stopped:true};});

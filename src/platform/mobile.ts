@@ -23,7 +23,7 @@ const id = () => crypto.randomUUID();
 const MAX_CUSTOM_PROVIDERS = 20;
 
 const SETTINGS_DEFAULTS: SettingsData = {
- theme: 'dark', systemPrompt: '', temperature: 0.7, maxTokens: 2048, topP: 1,
+ theme: 'dark', language: 'en', systemPrompt: '', temperature: 0.7, maxTokens: 2048, topP: 1,
  minimizeToTray: false, autoStart: false, notifications: false, accent: 'violet',
  personas: [], personaId: '', hotkeys: DEFAULT_HOTKEYS, templates: [], defaultWorkspace: '',
  customCss: '', compactMode: false, mcpServers: [], density: 'default', themePreset: 'default', reasoningEffort: 'off',
