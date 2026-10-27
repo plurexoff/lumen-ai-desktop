@@ -78,6 +78,18 @@ lumencode init                    # starter LUMEN.md for the current project
 - **REPL slash commands:** `/model`, `/provider`, `/models`, `/workspace`, `/readonly`, `/todos`, `/ops`, `/rollback`, `/memory`, `/clear`, `/help`, `/exit`. End a line with `\` for multi-line input; Ctrl-C stops the current reply (or declines an open approval), twice at the prompt exits; text typed while a reply streams is queued and sent next (up to 10 lines).
 - **Config & sessions** live in `~/.lumen-cli/` (`config.json` with chmod 600 — unlike the desktop's DPAPI encryption, CLI keys are plain JSON; sessions as JSON files). Generation keeps the desktop's guards: 6 tool rounds, ≈200 k chars of tool output per answer, 60 s stream watchdog, `LUMEN.md` + project tree on the first message, watch_files change notices, reasoning-effort mapping, per-answer token/cost line, and `spawn_subagent` (read-only, 3 rounds). MCP servers from `mcpServers` in the CLI config are exposed to the model namespaced like in the desktop app.
 
+## Android app (MVP)
+The same renderer also ships as an Android app via Capacitor (`android/` project, app id `ai.lumen.app`). The WebView has no Electron preload, so `window.lumen` is provided by a mobile platform layer (`src/platform/`): chat history and settings live in the same sql.js engine, persisted to the app sandbox via `@capacitor/filesystem`; API keys are stored in `@capacitor/preferences` (plain — Android has no DPAPI equivalent here); provider calls go through `CapacitorHttp` **non-streaming** (the plugin buffers whole responses, so a reply appears as one chunk instead of a token stream). Reasoning effort, multiple custom providers, folders, tags, search, branching, bookmarks/ratings and markdown export work; the desktop-only surface (workspace tools, MCP, sub-agents, chat tabs, quick window, PDF/zip export, auto-updates, backup/restore) is stubbed out. Regenerate replaces the answer in place (no variant history), auto-titles are the first 60 chars of your message, and updates are installed manually by side-loading a newer APK.
+
+**Build the APK** (one-time SDK setup: Android cmdline-tools + platform 35 + build-tools, and JDK 17–21 — Gradle 8 does not run on Java 25):
+```sh
+npm run build:renderer
+npx cap sync android
+cd android
+gradlew.bat assembleDebug   # needs ANDROID_HOME (…\AppData\Local\Android\Sdk) and JAVA_HOME (JDK 21)
+```
+The debug APK lands in `android/app/build/outputs/apk/debug/app-debug.apk`. `allowMixedContent` is on so loopback providers (Ollama/LM Studio) keep working; cloud endpoints are pinned to HTTPS as on desktop.
+
 ## Keyboard
 Shortcuts are rebindable in Settings → Appearance (a chord must include Ctrl or Alt); the defaults are:
 - `Ctrl K` — new conversation

@@ -261,6 +261,27 @@ export function isOpenAiReasoningModel(model: string): boolean {
 export function isGeminiThinkingModel(model: string): boolean { return /gemini-(2\.5|3)/.test(model); }
 export const GEMINI_THINKING_BUDGET = 8192;
 // Claude 3.7+ and the 4-series support extended thinking with an explicit budget.
+// Default provider catalog, seeded into the DB on first run by each shell
+// (Electron main or the Android platform layer).
+export const PROVIDER_DEFAULTS: ProviderConfig[] = [
+ {id:'openai',name:'OpenAI',baseUrl:'https://api.openai.com/v1',models:['gpt-4o','gpt-4o-mini','o3-mini']},
+ {id:'anthropic',name:'Anthropic',baseUrl:'https://api.anthropic.com/v1',models:['claude-sonnet-4-20250514','claude-3-5-haiku-20241022']},
+ {id:'gemini',name:'Google Gemini',baseUrl:'https://generativelanguage.googleapis.com/v1beta',models:['gemini-2.0-flash','gemini-2.5-pro-preview-03-25']},
+ {id:'openrouter',name:'OpenRouter',baseUrl:'https://openrouter.ai/api/v1',models:['anthropic/claude-sonnet-4','openai/gpt-4o-mini']},
+ {id:'groq',name:'Groq',baseUrl:'https://api.groq.com/openai/v1',models:['llama-3.3-70b-versatile','deepseek-r1-distill-llama-70b']},
+ {id:'deepseek',name:'DeepSeek',baseUrl:'https://api.deepseek.com/v1',models:['deepseek-chat','deepseek-reasoner']},
+ {id:'mistral',name:'Mistral',baseUrl:'https://api.mistral.ai/v1',models:['mistral-large-latest','mistral-small-latest']},
+ // Local servers ship keyless: both expose an OpenAI-compatible /v1 endpoint.
+ {id:'ollama',name:'Ollama',baseUrl:'http://127.0.0.1:11434/v1',models:[]},
+ {id:'lmstudio',name:'LM Studio',baseUrl:'http://127.0.0.1:1234/v1',models:[]},
+ {id:'custom',name:'Custom provider',baseUrl:'',models:[]}
+];
+// Cloud providers keep their official endpoint: letting the renderer swap baseUrl
+// for id='openai' would leak the real decrypted key to an attacker's host. Local
+// presets (ollama/lmstudio/custom) stay editable because ports vary.
+export const PINNED_PROVIDER_IDS = new Set<ProviderId>(['openai','anthropic','gemini','openrouter','groq','deepseek','mistral']);
+export const PINNED_URLS = new Map<ProviderId,string>(PROVIDER_DEFAULTS.filter(d=>PINNED_PROVIDER_IDS.has(d.id)).map(d=>[d.id,validateProviderUrl(d.baseUrl)] as [ProviderId,string]));
+
 export function isAnthropicThinkingModel(model: string): boolean {
  const bare = (model.split('/').pop() ?? model).trim().toLowerCase();
  return /^claude-(3-7|[a-z]+-4|[a-z]+-[5-9])/.test(bare);
@@ -572,7 +593,7 @@ export function authHeaders(p: ResolvedProvider): Record<string,string> {
  // A keyless loopback server must not receive an empty Authorization header.
  if (!p.key) return {};
  if (p.id === 'gemini') return { 'x-goog-api-key': p.key };
- if (p.id === 'anthropic') return { 'x-api-key': p.key, 'anthropic-version': '2023-06-01' };
+ if (p.id === 'anthropic') return { 'x-api-key': p.key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
  return { Authorization: 'Bearer ' + p.key };
 }
 

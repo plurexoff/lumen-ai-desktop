@@ -547,3 +547,13 @@ html:has(.app-shell.mica){background:transparent}
 
 /* Brand glyphs in the provider grid (same tile footprint as the letter badge). */
 .provider-logo{width:17px;height:17px;flex:none}
+
+/* ================= Android (Capacitor WebView) ================= */
+@media (max-width:760px){
+ .sidebar{position:fixed;left:0;top:0;bottom:0;z-index:60;width:min(300px,84vw);box-shadow:var(--shadow-2)}
+ .app-shell{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+ .message-list{padding:16px 12px 12px}
+ .composer{margin:0 8px 8px}
+ .toolbar{padding:0 8px}
+ .settings-modal{width:100vw;height:100vh;border-radius:0}
+}

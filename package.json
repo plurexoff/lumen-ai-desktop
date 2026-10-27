@@ -26,6 +26,9 @@
     "dist:win": "npm run build && electron-builder --win nsis --config.asar=false -c.win.signAndEditExecutable=false"
   },
   "dependencies": {
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/preferences": "^8.0.1",
     "dompurify": "^3.4.17",
     "electron-updater": "^6.8.11",
     "lucide-react": "^0.468.0",
@@ -38,6 +41,8 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/cli": "^8.5.3",
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.13.4",
     "@types/react": "^18.3.18",

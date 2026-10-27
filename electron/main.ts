@@ -7,8 +7,9 @@ import { execFile } from 'node:child_process';
 import { openDatabase, query, run, one, saveNow, transaction, dbStatus, lastPersistError, SCHEMA_VERSION } from './db';
 import {
  parseSseEvent, parseReasoningEvent, parseUsageEvent, parseAnthropicUsage, parseFinishReason, parseAnthropicFinish,
- validateProviderUrl, isSafeExternalUrl, isLoopbackUrl, buildModelsRequest, buildChatRequest, trimHistory, normalizeHistory,
+ isSafeExternalUrl, isLoopbackUrl, buildModelsRequest, buildChatRequest, trimHistory, normalizeHistory,
  validateProviderConfig, validateChatRequest, clampSettings, isKnownProviderId, normalizeHotkeys, authHeaders, TITLE_PROMPT, cleanTitle, stripGeminiModelPrefix, ENHANCE_PROMPT, cleanEnhanced, DEFAULT_PRICING,
+ PROVIDER_DEFAULTS, PINNED_URLS as PINNED_URLS_SHARED,
  parseToolCallDelta, parseAnthropicToolEvent, parseGeminiToolCall,
  type ResolvedProvider, type HistoryMessage, type ToolCallRecord, type ToolDef,
 } from './providers';
@@ -23,24 +24,8 @@ function log(...args: unknown[]) { console.log('[lumen]', ...args); }
 process.on('uncaughtException', e => console.error('[lumen] uncaughtException', e));
 process.on('unhandledRejection', r => console.error('[lumen] unhandledRejection', r));
 
-const defaults:ProviderConfig[]=[
-{id:'openai',name:'OpenAI',baseUrl:'https://api.openai.com/v1',models:['gpt-4o','gpt-4o-mini','o3-mini']},
-{id:'anthropic',name:'Anthropic',baseUrl:'https://api.anthropic.com/v1',models:['claude-sonnet-4-20250514','claude-3-5-haiku-20241022']},
-{id:'gemini',name:'Google Gemini',baseUrl:'https://generativelanguage.googleapis.com/v1beta',models:['gemini-2.0-flash','gemini-2.5-pro-preview-03-25']},
-{id:'openrouter',name:'OpenRouter',baseUrl:'https://openrouter.ai/api/v1',models:['anthropic/claude-sonnet-4','openai/gpt-4o-mini']},
-{id:'groq',name:'Groq',baseUrl:'https://api.groq.com/openai/v1',models:['llama-3.3-70b-versatile','deepseek-r1-distill-llama-70b']},
-{id:'deepseek',name:'DeepSeek',baseUrl:'https://api.deepseek.com/v1',models:['deepseek-chat','deepseek-reasoner']},
-{id:'mistral',name:'Mistral',baseUrl:'https://api.mistral.ai/v1',models:['mistral-large-latest','mistral-small-latest']},
-// Local servers ship keyless: both expose an OpenAI-compatible /v1 endpoint.
-{id:'ollama',name:'Ollama',baseUrl:'http://127.0.0.1:11434/v1',models:[]},
-{id:'lmstudio',name:'LM Studio',baseUrl:'http://127.0.0.1:1234/v1',models:[]},
-{id:'custom',name:'Custom provider',baseUrl:'',models:[]}
-];
-// Cloud providers keep their official endpoint: letting the renderer swap baseUrl
-// for id='openai' would leak the real decrypted key to an attacker's host. Local
-// presets (ollama/lmstudio/custom) stay editable because ports vary.
-const PINNED_PROVIDER_IDS=new Set<ProviderId>(['openai','anthropic','gemini','openrouter','groq','deepseek','mistral']);
-const PINNED_URLS=new Map<ProviderId,string>(defaults.filter(d=>PINNED_PROVIDER_IDS.has(d.id)).map(d=>[d.id,validateProviderUrl(d.baseUrl)] as [ProviderId,string]));
+const defaults:ProviderConfig[]=PROVIDER_DEFAULTS;
+const PINNED_URLS=PINNED_URLS_SHARED;
 // Cap on user-added custom endpoints (each is a row + a secret slot).
 const MAX_CUSTOM_PROVIDERS=20;
 // A stalled stream must not leave the UI stuck in "busy" forever.

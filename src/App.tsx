@@ -4,6 +4,7 @@ import {useApp} from './store';
 import type {PendingImage,Prefs,State,StreamState} from './store';
 import type {Chat,ChatChunk,ChatDoc,CompareAnswer,FileOp,Folder,Message,MessageVariant,ProviderConfig,ProviderId,TodoItem} from '../electron/shared';
 import {IMAGE_MIMES,isCustomProviderId,MAX_ATTACHMENT_BYTES,MAX_IMAGE_ATTACHMENTS} from '../electron/shared';
+import {isMobile} from './platform/detect';
 import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
 import Welcome from './components/Welcome';
@@ -50,7 +51,7 @@ export default function App(){
  const model=useApp(s=>s.model);
  const set=useApp(s=>s.set);
  const [showSettings,setShowSettings]=useState(false);
- const [showSidebar,setShowSidebar]=useState(true);
+ const [showSidebar,setShowSidebar]=useState(()=>!isMobile);
  const [tab,setTab]=useState<Tab>('providers');
  const [draft,setDraft]=useState('');
  const [images,setImagesState]=useState<PendingImage[]>([]);
@@ -351,6 +352,7 @@ export default function App(){
  },[set]);
 
  const openChat=useCallback((chat:Chat)=>{
+  if(isMobile)setShowSidebar(false);
   setUnread(prev=>{if(!prev.has(chat.id))return prev;const n=new Set(prev);n.delete(chat.id);return n;});
   setOpenTabs(prev=>prev.includes(chat.id)?prev:[...prev.slice(-7),chat.id]);
   if(chat.id===useApp.getState().activeId)return;
@@ -895,7 +897,7 @@ export default function App(){
  };
 
  return <div className={'app-shell'+(settings.density==='compact'||settings.compactMode?' compact':'')+(settings.density==='comfortable'?' comfy':'')+(focusMode?' focus':'')+(profile.mica?' mica':'')} data-theme={settings.theme} data-accent={settings.accent} data-preset={settings.themePreset}>
-  <Titlebar busy={anyBusy}/>
+  {!isMobile&&<Titlebar busy={anyBusy}/>}
   <div className="layout">
    {showSidebar&&!focusMode&&<Sidebar chats={chats} activeId={activeId} providers={providers} folders={folders} busyIds={busyIds} needsSetup={needsSetup} unread={unread}
      newChatHotkey={settings.hotkeys.newChat}
