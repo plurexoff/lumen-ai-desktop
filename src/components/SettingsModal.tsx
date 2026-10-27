@@ -1,7 +1,7 @@
 import {useEffect,useState} from 'react';
 import {Archive,BarChart3,Bot,Check,FileDown,FolderOpen,Keyboard,LayoutTemplate,Moon,Monitor,Pencil,Plus,RotateCcw,Save,Server,Shield,Sparkles,Sun,Trash2,X} from 'lucide-react';
 import type {Accent,DayUsage,HotkeyMap,McpServer,Persona,PromptTemplate,ProviderConfig,ProviderId,UsageRow,UsageSummary} from '../../electron/shared';
-import {ACCENTS,PERSONA_COLORS} from '../../electron/shared';
+import {ACCENTS,DENSITIES,PERSONA_COLORS,THEME_PRESETS} from '../../electron/shared';
 import type {Prefs} from '../store';
 import {providerColors} from '../store';
 import {formatCost,messageCost} from '../cost';
@@ -39,7 +39,7 @@ interface Props{
 // presets (ollama/lmstudio/custom) stay editable because ports vary.
 const PINNED_IDS=new Set<ProviderId>(['openai','anthropic','gemini','openrouter','groq','deepseek','mistral']);
 
-function Field({label,children}:{label:string;children:React.ReactNode}){return <label className="field"><span>{label}</span>{children}</label>}
+function Field({label,hint,children}:{label:string;hint?:string;children:React.ReactNode}){return <label className="field"><span>{label}</span>{children}{hint&&<p className="field-hint">{hint}</p>}</label>}
 
 // A boolean preference rendered as a switch row. Saves via onPref immediately —
 // there is no "apply" button anywhere else in this modal either.
@@ -297,11 +297,17 @@ export default function SettingsModal(props:Props){
      </div>
      <Field label="Accent color"><div className="accent-options">{ACCENTS.map(a=>
       <button key={a} className={'accent-dot accent-'+a+(settings.accent===a?' chosen':'')} aria-label={a+' accent'} title={a} onClick={()=>void onPref('accent',a as Accent)}/>)}</div></Field>
+     <Field label="Theme preset"><div className="preset-options">{THEME_PRESETS.map(p=>
+      <button key={p} className={'preset-swatch preset-'+p+(settings.themePreset===p?' chosen':'')} onClick={()=>void onPref('themePreset',p)} aria-label={p+' theme preset'}><i/><b>{p[0].toUpperCase()+p.slice(1)}</b></button>)}</div></Field>
      <Field label={'Temperature · '+settings.temperature.toFixed(1)}><input type="range" min="0" max="2" step="0.1" value={settings.temperature} onChange={e=>void onPref('temperature',Number(e.target.value))}/></Field>
      <Field label="Max response tokens"><input type="number" min="128" max="32000" value={settings.maxTokens} onChange={e=>void onPref('maxTokens',Number(e.target.value))}/></Field>
      <Field label="Top P"><input type="number" min="0" max="1" step="0.05" value={settings.topP} onChange={e=>void onPref('topP',Number(e.target.value))}/></Field>
      <Field label="System prompt"><textarea rows={4} value={settings.systemPrompt} onChange={e=>void onPref('systemPrompt',e.target.value)}/></Field>
-     <ToggleRow title="Compact mode" hint="Smaller paddings and margins — more text on screen." checked={settings.compactMode} onChange={v=>void onPref('compactMode',v)}/>
+     <Field label="Density" hint="How much air the interface has — compact fits more text on screen.">
+      <div className="density-picker">{DENSITIES.map(d=>
+       <button key={d} className={settings.density===d?'active':''} onClick={()=>void onPref('density',d)} aria-pressed={settings.density===d}>{d[0].toUpperCase()+d.slice(1)}</button>)}
+      </div>
+     </Field>
      <Field label="Default workspace folder">
       <div className="inline-row">
        <input value={settings.defaultWorkspace} readOnly placeholder="None — attach per chat from the toolbar" aria-label="Default workspace folder"/>

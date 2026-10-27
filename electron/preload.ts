@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { DesktopAPI } from './shared';
 const api:DesktopAPI={
  window:{minimize:()=>ipcRenderer.send('window:minimize'),toggleMaximize:()=>ipcRenderer.send('window:toggle-maximize'),close:()=>ipcRenderer.send('window:close'),setAlwaysOnTop:on=>ipcRenderer.send('window:always-on-top',on)},
- app:{version:()=>ipcRenderer.invoke('app:version'),pickFolder:title=>ipcRenderer.invoke('app:pick-folder',title)},
+ app:{version:()=>ipcRenderer.invoke('app:version'),pickFolder:title=>ipcRenderer.invoke('app:pick-folder',title),profile:()=>ipcRenderer.invoke('app:profile')},
  chats:{
   list:()=>ipcRenderer.invoke('chats:list'),
   create:()=>ipcRenderer.invoke('chats:create'),

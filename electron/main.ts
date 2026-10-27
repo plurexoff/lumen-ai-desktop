@@ -208,10 +208,18 @@ function windowIcon():string|undefined{
  }
  return undefined;
 }
+// Mica (Windows 11): the window background must be transparent for the material
+// to show through; the renderer paints translucent panels over it (.mica class).
+let micaActive=false;
 function createWindow(){
  const bounds=savedBounds();const theme=savedTheme();const icon=windowIcon();
  nativeTheme.themeSource=theme;
- win=new BrowserWindow({...(bounds??{width:1320,height:860}),minWidth:900,minHeight:620,frame:false,backgroundColor:theme==='light'?'#f5f6f8':'#0d0f12',...(icon?{icon}:{}),webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
+ // Mica (Windows 11): the window background must be transparent for the material
+ // to show through; the renderer paints translucent panels over it (.mica class).
+ // On Windows 10 the flag stays off and the window keeps its opaque theme color.
+ const micaOk=process.platform==='win32'&&Number(os.release().split('.')[2]??0)>=22000;
+ win=new BrowserWindow({...(bounds??{width:1320,height:860}),minWidth:900,minHeight:620,frame:false,backgroundColor:micaOk?'#00000000':theme==='light'?'#f5f6f8':'#0d0f12',...(icon?{icon}:{}),webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
+ if(micaOk){try{win.setBackgroundMaterial('mica');micaActive=true;}catch{/* older Win11 build — keep the transparent bg, panels stay opaque enough */}}
  // Only web-safe protocols may leave the app; anything else (search-ms:, file:, …)
  // is denied. .catch avoids an unhandled rejection when no handler is registered.
  win.webContents.setWindowOpenHandler(({url})=>{if(isSafeExternalUrl(url))shell.openExternal(url).catch(()=>{});return{action:'deny'};});
@@ -319,6 +327,9 @@ function listMessages(chatId:string){
 function initIpc(){
  ipcMain.on('window:minimize',()=>win.minimize());ipcMain.on('window:toggle-maximize',()=>win.isMaximized()?win.unmaximize():win.maximize());ipcMain.on('window:close',()=>win.close());
  ipcMain.handle('app:version',()=>app.getVersion());
+ // Renderer-facing environment info: whether the Mica material is live on the main
+ // window (drives the translucent-panel CSS) and the OS login name (avatar initial).
+ ipcMain.handle('app:profile',()=>{let username='';try{username=os.userInfo().username||'';}catch{}return{mica:micaActive,username};});
  ipcMain.handle('app:pick-folder',async(_e,title?:string)=>{
   const result=await dialog.showOpenDialog(win,{title:typeof title==='string'&&title?title.slice(0,100):'Choose a folder',properties:['openDirectory','createDirectory']});
   return result.canceled?null:(result.filePaths[0]?path.resolve(result.filePaths[0]):null);
@@ -567,7 +578,7 @@ function initIpc(){
  ipcMain.handle('providers:list',()=>query('SELECT id,name,base_url as baseUrl,models,pricing,(SELECT COUNT(*) FROM secrets s WHERE s.id=providers.id)>0 AS hasKey FROM providers').map((v)=>{const p=v as {models:string;pricing:string|null;hasKey:number};let pricing:ProviderConfig['pricing'];try{pricing=p.pricing?JSON.parse(p.pricing):undefined;}catch{pricing=undefined;}return{...v,models:JSON.parse(p.models),pricing,hasKey:Number(p.hasKey)>0};}));
  ipcMain.handle('providers:save',(_e,c:unknown,key?:string)=>{const config=validateProviderConfig(c,PINNED_URLS);run('INSERT INTO providers(id,name,base_url,models,pricing) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,models=excluded.models,pricing=excluded.pricing',[config.id,config.name,config.baseUrl,JSON.stringify(config.models),JSON.stringify(config.pricing??{})]);if(typeof key==='string'&&key){if(!safeStorage.isEncryptionAvailable())throw new Error('Windows secure storage unavailable');run('INSERT OR REPLACE INTO secrets VALUES(?,?)',[config.id,safeStorage.encryptString(key)]);}});
  ipcMain.handle('providers:remove',(_e,id:ProviderId)=>{if(!isKnownProviderId(id))return;run('DELETE FROM secrets WHERE id=?',[id]);if(id==='custom')run('DELETE FROM providers WHERE id=?',[id]);});
- ipcMain.handle('settings:get',()=>{const rows=query('SELECT key,value FROM settings') as Array<{key:string;value:string}>;const v=Object.fromEntries(rows.map(x=>[x.key,JSON.parse(x.value)]));return{theme:v.theme??'dark',systemPrompt:v.systemPrompt??'',temperature:v.temperature??0.7,maxTokens:v.maxTokens??2048,topP:v.topP??1,minimizeToTray:v.minimizeToTray===true,autoStart:v.autoStart===true,notifications:v.notifications===true,accent:v.accent??'violet',personas:Array.isArray(v.personas)?v.personas:[],personaId:typeof v.personaId==='string'?v.personaId:'',hotkeys:normalizeHotkeys(v.hotkeys),templates:Array.isArray(v.templates)?v.templates:[],defaultWorkspace:typeof v.defaultWorkspace==='string'?v.defaultWorkspace:'',customCss:typeof v.customCss==='string'?v.customCss:'',compactMode:v.compactMode===true,mcpServers:Array.isArray(v.mcpServers)?v.mcpServers:[]};});ipcMain.handle('settings:save',(_e,s:Record<string,unknown>)=>{if(!s||typeof s!=='object')return;const clamped=clampSettings(s);for(const[k,v]of Object.entries(clamped))run('INSERT OR REPLACE INTO settings VALUES(?,?)',[k,JSON.stringify(v)]);if(clamped.theme)nativeTheme.themeSource=clamped.theme as 'dark'|'light';
+ ipcMain.handle('settings:get',()=>{const rows=query('SELECT key,value FROM settings') as Array<{key:string;value:string}>;const v=Object.fromEntries(rows.map(x=>[x.key,JSON.parse(x.value)]));return{theme:v.theme??'dark',systemPrompt:v.systemPrompt??'',temperature:v.temperature??0.7,maxTokens:v.maxTokens??2048,topP:v.topP??1,minimizeToTray:v.minimizeToTray===true,autoStart:v.autoStart===true,notifications:v.notifications===true,accent:v.accent??'violet',personas:Array.isArray(v.personas)?v.personas:[],personaId:typeof v.personaId==='string'?v.personaId:'',hotkeys:normalizeHotkeys(v.hotkeys),templates:Array.isArray(v.templates)?v.templates:[],defaultWorkspace:typeof v.defaultWorkspace==='string'?v.defaultWorkspace:'',customCss:typeof v.customCss==='string'?v.customCss:'',compactMode:v.compactMode===true,mcpServers:Array.isArray(v.mcpServers)?v.mcpServers:[],density:v.density==='comfortable'||v.density==='compact'?v.density:(v.compactMode===true?'compact':'default'),themePreset:v.themePreset==='midnight'||v.themePreset==='sepia'?v.themePreset:'default'};});ipcMain.handle('settings:save',(_e,s:Record<string,unknown>)=>{if(!s||typeof s!=='object')return;const clamped=clampSettings(s);for(const[k,v]of Object.entries(clamped))run('INSERT OR REPLACE INTO settings VALUES(?,?)',[k,JSON.stringify(v)]);if(clamped.theme)nativeTheme.themeSource=clamped.theme as 'dark'|'light';
   // Side effects of system settings are applied here, not at next launch.
   if('autoStart' in clamped)app.setLoginItemSettings({openAtLogin:clamped.autoStart===true});
   if('minimizeToTray' in clamped)setTray(clamped.minimizeToTray===true);

@@ -406,6 +406,16 @@ export function clampSettings(input: Record<string, unknown>): Record<string, un
  // main process (no IPC surface is exposed to CSS).
  if ('customCss' in input) out.customCss = typeof input.customCss === 'string' ? input.customCss.slice(0, 100_000) : '';
  if ('compactMode' in input) out.compactMode = input.compactMode === true;
+ // Interface density (batch 7). compactMode stays in sync so old builds reading the
+ // same settings table keep working.
+ if ('density' in input) {
+  const d = input.density;
+  if (d === 'comfortable' || d === 'default' || d === 'compact') { out.density = d; out.compactMode = d === 'compact'; }
+ }
+ if ('themePreset' in input) {
+  const tp = input.themePreset;
+  if (tp === 'default' || tp === 'midnight' || tp === 'sepia') out.themePreset = tp;
+ }
  if ('mcpServers' in input) {
   const servers = validateMcpServers(input.mcpServers);
   if (servers) out.mcpServers = servers;

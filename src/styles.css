@@ -409,3 +409,126 @@ html{background:#0c0d10}body{font-size:13px;line-height:1.4}.titlebar{font-size:
 .quick-input textarea{flex:1;resize:none;background:var(--panel,#16181d);color:var(--text,#e6e6e6);border:1px solid var(--line,#2a2d33);border-radius:9px;padding:9px 11px;font-size:13px;outline:none;max-height:100px}
 .quick-shell .send-btn{flex:none;width:34px;height:34px;border:0;border-radius:9px;background:var(--accent,#8c75c5);color:#fff;display:grid;place-items:center;cursor:pointer}
 .quick-shell .send-btn:disabled{opacity:.5;cursor:default}
+
+/* ================= Batch 7: design refresh ================= */
+/* Design tokens: one accent ramp derived from --accent; all old hardcoded violet
+   hexes below are overridden to use it. */
+.app-shell{--accent-strong:color-mix(in srgb,var(--accent) 80%,#fff);--accent-dim:color-mix(in srgb,var(--accent) 22%,transparent);--shadow-1:0 2px 10px #00000026;--shadow-2:0 10px 34px #00000038;--r-sm:8px;--r-md:12px;--r-lg:14px}
+
+/* 1 · Typography & rhythm: nothing important below 10px, small caps get air. */
+.app-shell .sidebar,.app-shell .toolbar,.app-shell .tab-strip,.app-shell .settings-nav{letter-spacing:.01em}
+.send-area small,.composer-note{font-size:11px}
+.message-heading small{font-size:10px}
+.message-model{font-size:10px}
+.model-picker select{font-size:11px}
+.sidebar{padding:12px 12px 8px}
+.toolbar{padding:0 16px}
+.toolbar-left,.toolbar-right{gap:12px}
+.message-heading{gap:8px}
+
+/* 2 · Depth: lighter borders on dark, real shadows on floating surfaces. */
+.app-shell[data-theme=dark]{--line:#2e323b;--raised:#191d24}
+.composer,.settings-modal,.modal,.confirm-modal,.palette-modal,.templates-menu,.file-menu{box-shadow:var(--shadow-2)}
+.toast{box-shadow:var(--shadow-1)}
+
+/* 3 · Assistant answers read as bubbles; user lines stay plain text. */
+.message.assistant .message-content{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 16px}
+.message.assistant .message-heading{margin-top:0}
+.message.user .message-content{padding-top:2px}
+.message.bookmarked .message-content{border-left:2px solid var(--accent)}
+
+/* 4 · Visible keyboard focus everywhere. */
+.app-shell button:focus-visible,.app-shell input:focus-visible,.app-shell select:focus-visible,.app-shell textarea:focus-visible,.app-shell [role="option"]:focus-visible,.app-shell [role="tab"]:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:6px}
+
+/* 5 · Motion: one fast ease for hovers, small entrance animations for overlays. */
+.icon-btn,.nav-link,.chat-tab,.copy-btn,.secondary-button,.primary-button,.btn-primary,.btn-secondary,.provider-option,.palette-list button,.file-menu button,.density-picker button,.preset-swatch,.accent-dot{transition:background .14s ease,color .14s ease,border-color .14s ease,box-shadow .14s ease,transform .14s ease}
+.suggestions button:hover{box-shadow:var(--shadow-1)}
+.modal-backdrop{animation:fade-in .14s ease}
+.modal,.settings-modal,.confirm-modal{animation:pop-in .16s ease}
+.toast{animation:toast-in .18s ease}
+@keyframes fade-in{from{opacity:0}}
+@keyframes pop-in{from{opacity:0;transform:translateY(6px) scale(.99)}}
+@keyframes toast-in{from{opacity:0;transform:translateY(6px)}}
+
+/* 6 · Slim scrollbars that match the theme. */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:var(--faint);background-clip:padding-box}
+.app-shell{scrollbar-color:var(--line) transparent;scrollbar-width:thin}
+
+/* 7 · Light theme 2.0: warm paper instead of a dark-theme inversion. */
+.app-shell[data-theme=light]{--bg:#faf9f7;--panel:#fff;--side:#f3f1ee;--raised:#efece8;--line:#e4e1db;--text:#23262c;--muted:#6d7278;--faint:#a3a7ad;--shadow-1:0 2px 10px #3c425714;--shadow-2:0 12px 36px #3c42571f}
+.app-shell[data-theme=light] .composer{border-color:#d9d5cc}
+
+/* 8 · Theme presets: whole palettes, selected in Settings → Appearance. */
+.app-shell[data-preset=midnight]{--bg:#0a0f1e;--panel:#10152a;--side:#0d1226;--raised:#151b36;--line:#232a4a;--text:#e3e8f7;--muted:#8b94b8;--faint:#5a6285}
+.app-shell[data-preset=midnight][data-theme=light]{--bg:#f4f6fb;--panel:#fff;--side:#eceff7;--raised:#e6eaf5;--line:#d6dcea;--text:#1e2436;--muted:#5d6680;--faint:#9aa3bd}
+.app-shell[data-preset=sepia]{--bg:#171310;--panel:#1f1a17;--side:#1c1713;--raised:#282119;--line:#3a3128;--text:#ede5da;--muted:#a89a88;--faint:#6f6355}
+.app-shell[data-preset=sepia][data-theme=light]{--bg:#f8f4ec;--panel:#fffdf8;--side:#f2ede2;--raised:#ece5d6;--line:#e0d6c2;--text:#2e2822;--muted:#7d7264;--faint:#ada191}
+
+/* 9 · Provider dot in the assistant message heading. */
+.msg-provider-dot{width:7px;height:7px;border-radius:50%;flex:none}
+
+/* 10 · Empty states: icon + one line, centered. */
+.empty-state{display:flex;flex-direction:column;align-items:center;gap:8px;padding:20px 12px;color:var(--faint);text-align:center;font-size:11px}
+.empty-state p{margin:0;line-height:1.55;color:var(--muted)}
+
+/* 11 · Browser-like tabs: the active tab grows into the panel below it. */
+.tab-strip{gap:4px;padding:6px 8px 0;border-bottom:1px solid var(--line)}
+.chat-tab{border-color:transparent;color:var(--faint);padding:4px 8px 4px 12px}
+.chat-tab:hover{background:var(--raised);color:var(--muted)}
+.chat-tab.active{background:var(--bg);border-color:var(--line);border-bottom-color:var(--bg);margin-bottom:-1px;color:var(--text);box-shadow:inset 0 2px 0 var(--accent)}
+
+/* 12 · Composer as the visual center; a pulsing frame while generating. */
+.composer{border-radius:var(--r-lg);padding:14px 14px 10px;border-color:var(--line)}
+.composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim),var(--shadow-2)}
+.composer.busy{animation:composer-pulse 1.6s ease-in-out infinite}
+@keyframes composer-pulse{0%,100%{border-color:var(--line)}50%{border-color:var(--accent)}}
+.send-btn{width:30px;height:30px;border-radius:9px;background:var(--accent);color:#fff}
+.send-btn:hover{background:var(--accent-strong)}
+.send-btn.stop{background:#c35e68}
+
+/* 13 · Hardcoded violets -> accent tokens. */
+.new-chat{background:linear-gradient(100deg,var(--accent-strong),var(--accent));border-color:var(--accent)}
+.composer:focus-within{border-color:var(--accent)}
+.welcome-icon{color:var(--accent);border-color:var(--accent-dim);box-shadow:0 0 45px var(--accent-dim)}
+.welcome h1 em,.eyebrow{color:var(--accent)}
+.suggestions button:hover{border-color:var(--accent-dim)}
+.workspace-logo{background:linear-gradient(145deg,var(--accent-strong),var(--accent))}
+.setup-card{border-color:var(--accent-dim)}
+.message-avatar{color:var(--accent)}
+
+/* 14 · Mica: translucent chrome over the Windows 11 desktop material. */
+html:has(.app-shell.mica){background:transparent}
+.app-shell.mica{background:transparent}
+.app-shell.mica .titlebar{background:transparent;border-bottom-color:transparent}
+.app-shell.mica .sidebar{background:color-mix(in srgb,var(--side) 72%,transparent)}
+.app-shell.mica .main-panel{background:color-mix(in srgb,var(--bg) 88%,transparent)}
+.app-shell.mica .message.assistant .message-content{background:color-mix(in srgb,var(--panel) 82%,transparent)}
+
+/* 15 · Density: the existing compact set plus a roomier "comfortable". */
+.app-shell.comfy .message-list{padding:38px 32px 28px}
+.app-shell.comfy .message{margin-bottom:30px}
+.app-shell.comfy .composer{padding:16px 16px 12px}
+.app-shell.comfy .chat-row .chat-name{padding:9px 12px}
+.density-picker{display:flex;gap:6px}
+.density-picker button{flex:1;height:30px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--bg);color:var(--muted);font-size:11px;cursor:pointer}
+.density-picker button.active{border-color:var(--accent);color:var(--text);background:var(--accent-soft)}
+
+/* 8b · Preset swatch buttons. */
+.preset-options{display:flex;gap:8px}
+.preset-swatch{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--bg);color:var(--muted);font-size:11px;cursor:pointer}
+.preset-swatch i{width:16px;height:16px;border-radius:50%;background:linear-gradient(145deg,#3a4152,#14171d);border:1px solid var(--line)}
+.preset-swatch.preset-midnight i{background:linear-gradient(145deg,#232a4a,#0a0f1e)}
+.preset-swatch.preset-sepia i{background:linear-gradient(145deg,#5a4a35,#1c1713)}
+.preset-swatch.chosen{border-color:var(--accent);color:var(--text);background:var(--accent-soft)}
+
+/* 16 · Avatars: brand "L" for Lumen, a per-user gradient for the person. */
+.message-avatar{border-radius:9px;font:700 12px Manrope;color:#fff}
+.message-avatar.assistant{background:linear-gradient(145deg,var(--accent-strong),var(--accent))}
+.message-avatar.user{background:linear-gradient(145deg,#4a5568,#2d3748)}
+.app-shell[data-theme=light] .message.user .message-avatar{background:linear-gradient(145deg,#4a5568,#2d3748);color:#fff}
+.message-avatar.assistant{color:#fff}
+.app-shell.compact .message.assistant .message-content{padding:8px 12px}
+.app-shell.comfy .message.assistant .message-content{padding:16px 20px}

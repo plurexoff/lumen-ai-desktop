@@ -1,7 +1,8 @@
 import {memo,useEffect,useRef,useState} from 'react';
 import type {MouseEvent,RefObject} from 'react';
-import {Activity,Bookmark,Brain,Check,ChevronDown,Copy,CornerDownLeft,GitFork,Pencil,Quote,RefreshCw,Sparkles,ThumbsDown,ThumbsUp,Trash2,Volume2,VolumeX,Wrench} from 'lucide-react';
+import {Activity,Bookmark,Brain,Check,ChevronDown,Copy,CornerDownLeft,GitFork,Pencil,Quote,RefreshCw,ThumbsDown,ThumbsUp,Trash2,Volume2,VolumeX,Wrench} from 'lucide-react';
 import type {Message,MessageVariant,ProviderConfig,ToolEvent} from '../../electron/shared';
+import {providerColors} from '../store';
 import {useMarkdownHtml,useThrottledMarkdown} from '../useMarkdown';
 import {formatCost,messageCost} from '../cost';
 
@@ -31,11 +32,20 @@ interface Props{
  onRate:(message:Message,rating:number)=>void;
  // Tool-call cards for the in-flight answer (batch 6), shown in the stream bubble.
  toolEvents?:ToolEvent[];
+ // First letter of the OS login name, shown in the user avatar (batch 7).
+ userInitial:string;
 }
 
 // Stable empty array so the `variants[id] ?? NO_VARIANTS` fallback does not hand each
 // memoized row a fresh reference every render (which would defeat React.memo).
 const NO_VARIANTS:MessageVariant[]=[];
+
+// User avatar: a deterministic gradient derived from the initial, so it is stable
+// across sessions but distinct per login name.
+function avatarGradient(initial:string){
+ const hue=((initial.codePointAt(0)??65)*47)%360;
+ return `linear-gradient(145deg,hsl(${hue} 52% 55%),hsl(${(hue+42)%360} 55% 40%))`;
+}
 
 // Mermaid diagrams: ```mermaid fenced blocks are rendered to SVG after mount.
 // mermaid is imported lazily (it is by far the heaviest dependency); a failed or
@@ -155,12 +165,13 @@ function speak(text:string,onEnd:()=>void):()=>void{
  return ()=>speechSynthesis.cancel();
 }
 
-const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,providers,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch,onBookmark,onRate,onImageClick}:{
+const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,providers,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onLoadVariants,onRestoreVariant,onBranch,onBookmark,onRate,onImageClick,userInitial}:{
  m:Message;isLast:boolean;busy:boolean;highlighted?:boolean;variants:MessageVariant[];providers:ProviderConfig[];
  onCopy:(t:string)=>void;onRegenerate:()=>void;onContinue:(id:string)=>void;
  onDeleteMessage:(m:Message)=>void;onEditMessage:(m:Message,text:string)=>void;
  onLoadVariants:(id:string)=>void;onRestoreVariant:(id:string)=>void;
  onBranch:(m:Message)=>void;onBookmark:(m:Message)=>void;onRate:(m:Message,rating:number)=>void;onImageClick:(src:string)=>void;
+ userInitial:string;
 }){
  const html=useMarkdownHtml(m.content);
  const [editing,setEditing]=useState(false);
@@ -181,9 +192,10 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,pr
   setSpeaking(true);speak(m.content,()=>setSpeaking(false));
  };
  return <article id={'msg-'+m.id} className={'message '+m.role+(highlighted?' highlighted':'')+(m.bookmarked?' bookmarked':'')}>
-  <div className="message-avatar">{m.role==='user'?'Y':<Sparkles size={15}/>}</div>
+  <div className={'message-avatar '+m.role} style={m.role==='user'?{background:avatarGradient(userInitial)}:undefined}>{m.role==='user'?userInitial:'L'}</div>
   <div className="message-content">
    <div className="message-heading"><b>{m.role==='user'?'You':'Lumen'}</b>
+    {m.role==='assistant'&&m.providerId&&<span className="msg-provider-dot" style={{background:providerColors[m.providerId]??'var(--faint)'}} title={m.providerId}/>}
     <small>{new Date(m.createdAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</small>
     {m.role==='assistant'&&m.model&&<small className="message-model">{m.model}</small>}
     {m.role==='assistant'&&<Usage promptTokens={m.promptTokens} completionTokens={m.completionTokens} cost={cost}/>}
@@ -240,7 +252,7 @@ const MessageRow=memo(function MessageRow({m,isLast,busy,highlighted,variants,pr
  </article>;
 });
 
-export default function MessageList({messages,busy,stream,reasoning,error,status,highlightId,variants,providers,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch,onBookmark,onRate,toolEvents}:Props){
+export default function MessageList({messages,busy,stream,reasoning,error,status,highlightId,variants,providers,bottomRef,onCopy,onRegenerate,onContinue,onDeleteMessage,onEditMessage,onRetry,onLoadVariants,onRestoreVariant,onBranch,onBookmark,onRate,toolEvents,userInitial}:Props){
  const last=messages[messages.length-1];
  const canRetry=!!last&&last.role==='assistant'&&!busy;
  // The streaming bubble re-parses on a throttle, not per chunk (idea #17).
@@ -261,11 +273,11 @@ export default function MessageList({messages,busy,stream,reasoning,error,status
     <MessageRow m={m} isLast={i===messages.length-1} busy={busy} highlighted={m.id===highlightId} variants={variants[m.id]??NO_VARIANTS} providers={providers}
      onCopy={onCopy} onRegenerate={onRegenerate} onContinue={onContinue}
      onDeleteMessage={onDeleteMessage} onEditMessage={onEditMessage}
-     onLoadVariants={onLoadVariants} onRestoreVariant={onRestoreVariant} onBranch={onBranch} onBookmark={onBookmark} onRate={onRate} onImageClick={setLightbox}/>
+     onLoadVariants={onLoadVariants} onRestoreVariant={onRestoreVariant} onBranch={onBranch} onBookmark={onBookmark} onRate={onRate} onImageClick={setLightbox} userInitial={userInitial}/>
    </div>;
   })}
   {(busy||stream||reasoning)&&<article className="message assistant" aria-live="polite" aria-busy="true">
-   <div className="message-avatar"><Sparkles size={15}/></div>
+   <div className="message-avatar assistant">L</div>
    <div className="message-content">
     <div className="message-heading"><b>Lumen</b><small>{status??(stream?'Responding':'Thinking')}</small></div>
     {/* Indeterminate progress while generating — no total is knowable mid-stream. */}

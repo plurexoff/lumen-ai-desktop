@@ -167,7 +167,7 @@ export default forwardRef<HTMLTextAreaElement,Props>(function Composer({draft,bu
   setFileMenu(null);
   requestAnimationFrame(()=>{if(el){const pos=fm.start+item.length+2;el.setSelectionRange(pos,pos);el.focus();autosize(el);}});
  };
- return <footer className="composer-area"><div className="composer">
+ return <footer className="composer-area"><div className={'composer'+(busy?' busy':'')}>
   {needsSetup&&<div className="composer-warning">
    <KeyRound size={13}/><span>No provider is connected yet.</span>
    <button onClick={onOpenSettings}>Connect one</button>

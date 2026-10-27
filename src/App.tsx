@@ -113,6 +113,10 @@ export default function App(){
  const [showDocs,setShowDocs]=useState(false);
  const [actionToast,setActionToast]=useState<{opId:string;text:string}|null>(null);
  const actionToastTimer=useRef<ReturnType<typeof setTimeout>>();
+ // OS profile: whether the Mica material is live (translucent panels) and the login
+ // name whose initial becomes the user avatar.
+ const [profile,setProfile]=useState<{mica:boolean;username:string}>({mica:false,username:''});
+ useEffect(()=>{window.lumen.app.profile().then(setProfile).catch(()=>{});},[]);
 
  const active=chats.find(c=>c.id===activeId);
  const stream=activeId?streams[activeId]:undefined;
@@ -883,7 +887,7 @@ export default function App(){
   return [...cmds,...chatItems].slice(0,12);
  };
 
- return <div className={'app-shell'+(settings.compactMode?' compact':'')+(focusMode?' focus':'')} data-theme={settings.theme} data-accent={settings.accent}>
+ return <div className={'app-shell'+(settings.density==='compact'||settings.compactMode?' compact':'')+(settings.density==='comfortable'?' comfy':'')+(focusMode?' focus':'')+(profile.mica?' mica':'')} data-theme={settings.theme} data-accent={settings.accent} data-preset={settings.themePreset}>
   <Titlebar busy={anyBusy}/>
   <div className="layout">
    {showSidebar&&!focusMode&&<Sidebar chats={chats} activeId={activeId} providers={providers} folders={folders} busyIds={busyIds} needsSetup={needsSetup} unread={unread}
@@ -955,7 +959,7 @@ export default function App(){
        <div><b>{op.tool}</b>{op.path&&<code>{op.path}</code>}</div>
        <small>{new Date(op.createdAt).toLocaleTimeString()} · {op.status}{op.detail&&' — '+op.detail.slice(0,120)}</small>
        {op.snapshot&&op.status==='ok'&&op.tool!=='rollback'&&<button className="op-rollback" onClick={()=>void rollbackOp(op.id)}>Roll back</button>}
-      </li>)}</ul>:<p className="templates-empty">No operations yet</p>}
+      </li>)}</ul>:<div className="empty-state"><FileClock size={18}/><p>No operations yet — file activity of the model will show up here.</p></div>}
     </aside>}
     {/* Batch 6: attached documents (RAG) — relevant excerpts join the system prompt. */}
     {showDocs&&<aside className="side-panel" aria-label="Attached documents">
@@ -964,7 +968,7 @@ export default function App(){
        <div><b>{d.name}</b></div>
        <small>{Math.round(d.chars/100)/10}k chars · {new Date(d.createdAt).toLocaleDateString()}</small>
        <button className="op-rollback" onClick={()=>void removeDoc(d.id)}>Remove</button>
-      </li>)}</ul>:<p className="templates-empty">No documents yet — attach a text/markdown/PDF file and the model will quote from it.</p>}
+      </li>)}</ul>:<div className="empty-state"><BookOpen size={18}/><p>No documents yet — attach a text, markdown or PDF file and the model will quote from it.</p><button className="secondary-button" onClick={()=>void attachDoc()}>Attach document…</button></div>}
      <div className="settings-actions"><button className="secondary-button" disabled={docs.length>=8} onClick={()=>void attachDoc()}>Attach document…</button></div>
     </aside>}
     <section className="conversation" ref={conversation} onScroll={onScroll}>
@@ -974,7 +978,7 @@ export default function App(){
         status={stream?.status} highlightId={highlightId} toolEvents={stream?.toolEvents}
         variants={variants} providers={providers} bottomRef={bottom} onCopy={copy} onRegenerate={regenerate}
         onContinue={continueMessage} onDeleteMessage={deleteMessage} onEditMessage={commitEdit} onRetry={regenerate}
-        onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat} onBookmark={toggleBookmark} onRate={rateMessage}/>}
+        onLoadVariants={loadVariants} onRestoreVariant={restoreVariant} onBranch={branchChat} onBookmark={toggleBookmark} onRate={rateMessage} userInitial={profile.username?profile.username[0].toUpperCase():'Y'}/>}
     </section>
     {!atBottom&&(messages.length>0||busy)&&<button className="scroll-bottom" aria-label="Scroll to latest" onClick={scrollToBottom}>↓</button>}
     <Composer ref={input} draft={draft} busy={busy} needsSetup={needsSetup} providers={providers} providerId={providerId} model={model}
@@ -1023,6 +1027,7 @@ export default function App(){
      }}/></div>
     <div className="palette-list">{paletteItems(paletteQuery.trim().toLowerCase()).map(it=>
      <button key={it.id} onClick={()=>{setShowPalette(false);it.run();}}>{it.icon}<span>{it.label}</span>{it.hint&&<small>{it.hint}</small>}</button>)}
+     {paletteItems(paletteQuery.trim().toLowerCase()).length===0&&<div className="empty-state"><Command size={16}/><p>No matches for «{paletteQuery.trim()}»</p></div>}
     </div>
    </div>
   </div>}

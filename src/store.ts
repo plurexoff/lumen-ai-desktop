@@ -1,8 +1,8 @@
 import {create} from 'zustand';
-import type {Accent,Chat,HotkeyMap,McpServer,Message,Persona,PromptTemplate,ProviderConfig,ProviderId,FinishReason,ToolEvent} from '../electron/shared';
+import type {Accent,Chat,Density,HotkeyMap,McpServer,Message,Persona,PromptTemplate,ProviderConfig,ProviderId,FinishReason,ThemePreset,ToolEvent} from '../electron/shared';
 import {DEFAULT_HOTKEYS} from '../electron/shared';
 
-export type Prefs={theme:'dark'|'light';systemPrompt:string;temperature:number;maxTokens:number;topP:number;minimizeToTray:boolean;autoStart:boolean;notifications:boolean;accent:Accent;personas:Persona[];personaId:string;hotkeys:HotkeyMap;templates:PromptTemplate[];defaultWorkspace:string;customCss:string;compactMode:boolean;mcpServers:McpServer[]};
+export type Prefs={theme:'dark'|'light';systemPrompt:string;temperature:number;maxTokens:number;topP:number;minimizeToTray:boolean;autoStart:boolean;notifications:boolean;accent:Accent;personas:Persona[];personaId:string;hotkeys:HotkeyMap;templates:PromptTemplate[];defaultWorkspace:string;customCss:string;compactMode:boolean;mcpServers:McpServer[];density:Density;themePreset:ThemePreset};
 
 // An image staged in the composer but not sent yet. `preview` is a data: URL so the
 // optimistic bubble can render it without touching the lumen-attachment:// protocol.
@@ -48,7 +48,7 @@ export interface State{
 
 export const useApp=create<State>(set=>({
  chats:[],activeId:null,messages:[],providers:[],
- settings:{theme:'dark',systemPrompt:'',temperature:.7,maxTokens:2048,topP:1,minimizeToTray:false,autoStart:false,notifications:false,accent:'violet',personas:[],personaId:'',hotkeys:DEFAULT_HOTKEYS,templates:[],defaultWorkspace:'',customCss:'',compactMode:false,mcpServers:[]},
+ settings:{theme:'dark',systemPrompt:'',temperature:.7,maxTokens:2048,topP:1,minimizeToTray:false,autoStart:false,notifications:false,accent:'violet',personas:[],personaId:'',hotkeys:DEFAULT_HOTKEYS,templates:[],defaultWorkspace:'',customCss:'',compactMode:false,mcpServers:[],density:'default',themePreset:'default'},
  providerId:'openai',model:'gpt-4o-mini',
  streams:{},errors:{},pending:{},
  set:x=>set(x),
