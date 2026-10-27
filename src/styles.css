@@ -532,3 +532,11 @@ html:has(.app-shell.mica){background:transparent}
 .message-avatar.assistant{color:#fff}
 .app-shell.compact .message.assistant .message-content{padding:8px 12px}
 .app-shell.comfy .message.assistant .message-content{padding:16px 20px}
+
+/* Fix: the composer frame already lights up via :focus-within — a second accent
+   outline on the textarea itself hugged the input right against the button row
+   and read as "the input overlaps the buttons". Same for the inline message
+   editor, which already has its own accent border. */
+.composer textarea:focus-visible,.message-edit textarea:focus-visible{outline:none}
+.composer textarea{margin-bottom:6px}
+.composer:focus-within{box-shadow:0 0 0 2px var(--accent-dim),var(--shadow-2)}
