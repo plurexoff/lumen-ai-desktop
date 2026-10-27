@@ -552,7 +552,8 @@ html:has(.app-shell.mica){background:transparent}
 @media (max-width:760px){
  /* The desktop shell pins body to 900x620 — inside a phone WebView that makes the
     whole page overflow and render zoomed-out/stretched. */
- html,body{min-width:0!important;min-height:0!important}
+ html,body{min-width:0!important;min-height:0!important;overflow-x:hidden;max-width:100vw}
+ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
  .app-shell{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
  /* Sidebar becomes an overlay drawer (closed by default on mobile, closes on chat pick). */
  .sidebar{position:fixed;left:0;top:0;bottom:0;z-index:60;width:min(300px,84vw);box-shadow:var(--shadow-2,0 12px 40px #000a)}
@@ -580,10 +581,20 @@ html:has(.app-shell.mica){background:transparent}
  .welcome{padding:20px 16px 24px}
  .welcome h1{font-size:22px;letter-spacing:-.5px}
  .suggestions{grid-template-columns:1fr}
- /* Composer fills the width. */
+ /* Composer fills the width; the bottom row (3 selects + 6 buttons) is wider than
+    a phone, so let it wrap instead of forcing the whole page to scroll sideways. */
  .composer-area{width:100%;padding:0 8px 8px}
- .model-picker select{max-width:104px}
+ .composer-bottom{flex-wrap:wrap;row-gap:6px}
+ .model-picker{height:auto;flex-wrap:wrap;row-gap:4px}
+ .model-picker select{max-width:110px;min-width:64px}
+ .send-area{gap:6px;margin-left:auto}
  .send-area small{display:none}
+ .new-chat kbd{display:none}
+ /* Fixed elements ignore the app-shell's safe-area padding — give the drawer and
+    the fullscreen settings modal their own inset from the status bar. */
+ .sidebar{padding-top:calc(12px + env(safe-area-inset-top))}
+ .settings-modal{padding-top:env(safe-area-inset-top)}
+ .side-panel{padding-bottom:env(safe-area-inset-bottom)}
  /* Modals go fullscreen; settings nav becomes a horizontal strip. */
  .modal-backdrop{inset:0;padding:0}
  .settings-modal{width:100vw;height:100vh;height:100dvh;border-radius:0;border:0}

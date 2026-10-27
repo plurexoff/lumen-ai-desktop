@@ -953,7 +953,7 @@ export default function App(){
        <button className="icon-btn" aria-label={active.archived?'Unarchive this chat':'Archive this chat'} title={active.archived?'Unarchive':'Archive (hide without deleting)'} onClick={()=>void toggleArchived(active)}><Archive size={16}/></button>
       </>}
       <button className={'icon-btn'+(focusMode?' active':'')} aria-label="Focus mode" title="Focus mode — hide everything but the conversation (Esc to exit)" onClick={()=>setFocusMode(v=>!v)}>{focusMode?<Minimize2 size={16}/>:<Maximize2 size={16}/>}</button>
-      <button className={'icon-btn'+(alwaysOnTop?' active':'')} aria-label="Always on top" title="Always on top" onClick={toggleAlwaysOnTop}><Pin size={16}/></button>
+      {!isMobile&&<button className={'icon-btn'+(alwaysOnTop?' active':'')} aria-label="Always on top" title="Always on top" onClick={toggleAlwaysOnTop}><Pin size={16}/></button>}
       <span className="private-label"><Shield size={13}/>Private by design</span>
       <button className="icon-btn" aria-label="Settings" onClick={openProvidersTab}><Settings size={16}/></button>
      </div>

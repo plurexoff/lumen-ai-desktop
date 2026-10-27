@@ -1,26 +1,44 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import type { McpServer, ProviderConfig, ProviderId, ReasoningEffort } from '../electron/shared';
 import { isCustomProviderId } from '../electron/shared';
 import { DEFAULT_PRICING, isLoopbackUrl, validateProviderUrl, type ResolvedProvider } from '../electron/providers';
 
-// CLI configuration lives outside the project in the user profile. Unlike the
-// desktop app (Electron safeStorage / DPAPI), keys are stored as plain JSON —
-// the file is created with owner-only permissions and `lumencode config` masks them.
+// A named agent (opencode-style): a system-prompt preset with optional model
+// overrides. Switch with `lumencode --agent <id>` or /agent in the TUI.
+export interface AgentConfig { id: string; name: string; description?: string; prompt: string; providerId?: string; model?: string }
+
+// An experimental LSP server binding: which command speaks LSP for which file
+// extensions (cli/lsp.ts).
+export interface LspServerConfig { id: string; command: string; extensions: string[] }
+
+// CLI configuration lives outside the project in the user profile.
+// LUMEN_CLI_HOME overrides the directory (used by tests).
+// API keys are stored AES-256-GCM-encrypted with a machine-bound key — never
+// plaintext (NFR-4) — and the file itself is created owner-only (600).
 export interface CliConfig {
  providers: ProviderConfig[];
  keys: Record<string, string>;
  defaultProvider?: string;
  defaultModel?: string;
  defaultWorkspace?: string;
+ defaultAgent?: string;
  systemPrompt?: string;
  temperature?: number;
  topP?: number;
  maxTokens?: number;
  reasoningEffort?: ReasoningEffort;
  mcpServers?: McpServer[];
+ agents?: AgentConfig[];
+ lspServers?: LspServerConfig[];
 }
+
+// A stored MCP credential (mcp auth): token kept with the server entry.
+export interface McpCredential { token: string; obtainedAt: number }
+
+export const CONFIG_DIR = process.env.LUMEN_CLI_HOME || path.join(os.homedir(), '.lumen-cli');
 
 // Same presets as the desktop app (electron/main.ts).
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
@@ -47,9 +65,40 @@ const ENV_KEYS: Record<string, string[]> = {
  mistral: ['MISTRAL_API_KEY'],
 };
 
-const CONFIG_DIR = path.join(os.homedir(), '.lumen-cli');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 export const SESSIONS_DIR = path.join(CONFIG_DIR, 'sessions');
+export const COMMANDS_DIR = path.join(CONFIG_DIR, 'commands');
+export const SKILLS_DIR = path.join(CONFIG_DIR, 'skills');
+export const PLUGINS_DIR = path.join(CONFIG_DIR, 'plugins');
+
+// ---- key encryption ----------------------------------------------------------
+// Machine-bound AES-256-GCM. This is not a secret store (anyone with the config
+// file AND this machine profile can decrypt), but keys never sit on disk in
+// plaintext and a copied config.json is useless on another machine.
+const ENC_PREFIX = 'enc:v1:';
+
+function machineKey(): Buffer {
+ const material = ['lumen-cli', os.hostname(), os.userInfo().username, os.homedir()].join('|');
+ return crypto.createHash('sha256').update(material).digest();
+}
+
+export function encryptSecret(plain: string): string {
+ const iv = crypto.randomBytes(12);
+ const cipher = crypto.createCipheriv('aes-256-gcm', machineKey(), iv);
+ const enc = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+ return ENC_PREFIX + Buffer.concat([iv, cipher.getAuthTag(), enc]).toString('base64');
+}
+
+export function decryptSecret(stored: string): string {
+ if (!stored.startsWith(ENC_PREFIX)) return stored; // legacy plaintext — re-saved encrypted
+ try {
+  const raw = Buffer.from(stored.slice(ENC_PREFIX.length), 'base64');
+  const iv = raw.subarray(0, 12), tag = raw.subarray(12, 28), data = raw.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', machineKey(), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+ } catch { return ''; } // wrong machine or corrupted value
+}
 
 export function configPath(): string { return CONFIG_FILE; }
 
@@ -74,13 +123,19 @@ export function loadConfig(): CliConfig {
   maxTokens: typeof raw.maxTokens === 'number' ? raw.maxTokens : undefined,
   reasoningEffort: typeof raw.reasoningEffort === 'string' ? raw.reasoningEffort : undefined,
   mcpServers: Array.isArray(raw.mcpServers) ? raw.mcpServers : undefined,
+  agents: Array.isArray(raw.agents) ? raw.agents : undefined,
+  lspServers: Array.isArray(raw.lspServers) ? raw.lspServers : undefined,
+  defaultAgent: typeof raw.defaultAgent === 'string' ? raw.defaultAgent : undefined,
  };
 }
 
 export function saveConfig(cfg: CliConfig): void {
  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+ // Encrypt any plaintext keys left over from older versions before writing.
+ const keys: Record<string, string> = {};
+ for (const [id, k] of Object.entries(cfg.keys)) keys[id] = k && !k.startsWith(ENC_PREFIX) ? encryptSecret(k) : k;
  const tmp = CONFIG_FILE + '.tmp';
- fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
+ fs.writeFileSync(tmp, JSON.stringify({ ...cfg, keys }, null, 2));
  try { fs.chmodSync(tmp, 0o600); } catch { /* Windows: best effort */ }
  fs.renameSync(tmp, CONFIG_FILE);
 }
@@ -90,7 +145,7 @@ export function findProvider(cfg: CliConfig, id: string): ProviderConfig | undef
 }
 
 export function providerKey(cfg: CliConfig, id: string): string {
- if (cfg.keys[id]) return cfg.keys[id];
+ if (cfg.keys[id]) return decryptSecret(cfg.keys[id]);
  for (const env of ENV_KEYS[id] ?? []) { const v = process.env[env]; if (v) return v; }
  return '';
 }
