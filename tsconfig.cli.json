@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "CommonJS", "moduleResolution": "Node", "outDir": "dist-cli",
+    "rootDir": ".", "strict": true, "esModuleInterop": true, "skipLibCheck": true,
+    "types": ["node"], "noUnusedLocals": true, "noUnusedParameters": true
+  },
+  "include": ["cli/**/*.ts", "electron/shared.ts", "electron/providers.ts", "electron/tools.ts", "electron/mcp.ts"]
+}

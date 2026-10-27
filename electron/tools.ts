@@ -588,9 +588,24 @@ export async function webFetch(url: string, approve: ApproveFn): Promise<string>
 // SQLite files are opened with sql.js (fresh instance per call — these are the
 // USER's data files, not the app database); CSV gets a tiny in-memory table.
 
+// The WASM file ships in node_modules; its path relative to this compiled file
+// differs between build layouts (dist-electron/, dist-cli/electron/), so walk up
+// from __dirname until node_modules/sql.js/dist is found.
+function sqlJsDistDir(): string {
+ let dir = __dirname;
+ for (let i = 0; i < 8; i++) {
+  const candidate = path.join(dir, 'node_modules', 'sql.js', 'dist');
+  if (fs.existsSync(candidate)) return candidate;
+  const parent = path.dirname(dir);
+  if (parent === dir) break;
+  dir = parent;
+ }
+ return path.join(__dirname, '../node_modules/sql.js/dist');
+}
+
 async function sqlJs() {
  const init = (await import('sql.js')).default;
- return init({ locateFile: (file: string) => path.join(__dirname, '../node_modules/sql.js/dist', file) });
+ return init({ locateFile: (file: string) => path.join(sqlJsDistDir(), file) });
 }
 
 function parseCsv(text: string): string[][] {

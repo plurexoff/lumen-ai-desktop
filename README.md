@@ -52,6 +52,32 @@ Chat records and preferences are stored in `lumen.sqlite` under Electron's user-
 - **Tool visibility & safety:** tool calls render as **cards** in the streaming bubble (name, argument hint, running/ok/declined/failed); a file mutation pops an **actionable toast with one-click rollback**; **watch_files** tells the model which workspace files changed on disk outside the app since its last answer; `sql_query` runs read-only SELECTs over workspace `.csv`/`.sqlite`/`.db` files.
 - **Answers:** assistant messages carry a **👍/👎 rating** (persisted, click again to clear) and **mermaid** fenced blocks render as diagrams (lazy-loaded, strict security level, theme-aware; invalid diagrams stay code blocks). The composer autocompletes `@file` paths from the workspace.
 
+## CLI
+The same engine ships as a terminal client (OpenCode-style): it reuses the desktop's provider layer (`electron/providers.ts`) and the full workspace toolset (`electron/tools.ts`) with no Electron dependency.
+
+**Launch — one command:**
+```sh
+lumencode.bat       # Windows: builds on first run, then opens the chat
+npm run cli          # same thing via npm (add flags after --, e.g. npm run cli -- --help)
+npm link             # optional: puts a global `lumencode` command on your PATH
+```
+
+```sh
+lumencode                         # interactive chat (REPL)
+lumencode run "fix the tests"     # one-shot, tools enabled in the cwd
+lumencode login openai            # save an API key (env vars like OPENAI_API_KEY also work)
+lumencode models groq             # refresh a provider's model list from its API
+lumencode use anthropic claude-sonnet-4-20250514
+lumencode add-provider custom-lab http://127.0.0.1:8080/v1
+lumencode sessions                # saved conversations; continue with -c / --session <id>
+lumencode init                    # starter LUMEN.md for the current project
+```
+
+- **Terminal UI:** an opencode-style TUI — scrollable chat region with a fixed input panel at the bottom (border + status bar, arrow-key history, multi-line via `\`, single-key `y/n/a` approvals). Answers stream as markdown (headers, code blocks, lists, quotes), tool calls show as framed cards, a spinner reports waiting/working states, and each reply ends with a token/cost line. Pipes and redirects automatically fall back to plain line mode.
+- **Tools in the terminal:** the workspace defaults to the cwd (`-w <dir>` / `--no-workspace`); every mutation/command/fetch prompts `y / n / a(lways)` with a unified-diff preview — `--yes` auto-approves, and a non-interactive stdin always declines. Read-only mode (`--readonly` or `/readonly`) blocks all mutations. Before any change the old file is snapshotted into `.lumen-backup/`; `/ops` lists the session's operations and `/rollback <n>` restores one.
+- **REPL slash commands:** `/model`, `/provider`, `/models`, `/workspace`, `/readonly`, `/todos`, `/ops`, `/rollback`, `/memory`, `/clear`, `/help`, `/exit`. End a line with `\` for multi-line input; Ctrl-C stops the current reply (or declines an open approval), twice at the prompt exits; text typed while a reply streams is queued and sent next (up to 10 lines).
+- **Config & sessions** live in `~/.lumen-cli/` (`config.json` with chmod 600 — unlike the desktop's DPAPI encryption, CLI keys are plain JSON; sessions as JSON files). Generation keeps the desktop's guards: 6 tool rounds, ≈200 k chars of tool output per answer, 60 s stream watchdog, `LUMEN.md` + project tree on the first message, watch_files change notices, reasoning-effort mapping, per-answer token/cost line, and `spawn_subagent` (read-only, 3 rounds). MCP servers from `mcpServers` in the CLI config are exposed to the model namespaced like in the desktop app.
+
 ## Keyboard
 Shortcuts are rebindable in Settings → Appearance (a chord must include Ctrl or Alt); the defaults are:
 - `Ctrl K` — new conversation

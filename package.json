@@ -6,6 +6,9 @@
   "author": "Lumen AI contributors",
   "description": "Secure multi-provider AI desktop client",
   "main": "dist-electron/main.js",
+  "bin": {
+    "lumencode": "dist-cli/cli/index.js"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -15,7 +18,9 @@
     "build": "npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "build:cli": "tsc -p tsconfig.cli.json",
+    "cli": "npm run build:cli && node dist-cli/cli/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json && tsc --noEmit -p tsconfig.cli.json",
     "lint": "eslint .",
     "test": "vitest run",
     "dist:win": "npm run build && electron-builder --win nsis --config.asar=false -c.win.signAndEditExecutable=false"
