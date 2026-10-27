@@ -1,6 +1,8 @@
 import {useEffect,useState} from 'react';
 import {Archive,BarChart3,Bot,Check,FileDown,FolderOpen,Keyboard,LayoutTemplate,Moon,Monitor,Pencil,Plus,RotateCcw,Save,Server,Shield,Sparkles,Sun,Trash2,X} from 'lucide-react';
 import type {Accent,DayUsage,HotkeyMap,McpServer,Persona,PromptTemplate,ProviderConfig,ProviderId,UsageRow,UsageSummary} from '../../electron/shared';
+import type {BuiltinProviderId} from '../../electron/shared';
+import {PROVIDER_LOGOS} from './providerLogos';
 import {ACCENTS,DENSITIES,isCustomProviderId,PERSONA_COLORS,REASONING_EFFORTS,THEME_PRESETS} from '../../electron/shared';
 import type {Prefs} from '../store';
 import {providerColors} from '../store';
@@ -41,6 +43,14 @@ interface Props{
 const PINNED_IDS=new Set<ProviderId>(['openai','anthropic','gemini','openrouter','groq','deepseek','mistral']);
 
 function Field({label,hint,children}:{label:string;hint?:string;children:React.ReactNode}){return <label className="field"><span>{label}</span>{children}{hint&&<p className="field-hint">{hint}</p>}</label>}
+
+// Built-in providers show their brand glyph; custom endpoints keep the letter tile.
+function ProviderIcon({id,name}:{id:ProviderId;name:string}){
+ const logo=PROVIDER_LOGOS[id as BuiltinProviderId];
+ const color=providerColors[id]??providerColors.custom;
+ if(logo)return <svg className="provider-logo" viewBox={logo.viewBox} aria-hidden="true"><path d={logo.path} fill={color}/></svg>;
+ return <span style={{color}}>{name[0]}</span>;
+}
 
 // A boolean preference rendered as a switch row. Saves via onPref immediately —
 // there is no "apply" button anywhere else in this modal either.
@@ -257,7 +267,7 @@ export default function SettingsModal(props:Props){
      <div className="provider-grid">{providers.map(p=>
       <button key={p.id} className={'provider-option '+(providerId===p.id?'chosen':'')}
        onClick={()=>{onProviderSelect(p.id);setBaseUrl(p.baseUrl);setProviderName(p.name);if(p.models[0])onModel(p.models[0]);}}>
-       <span style={{color:providerColors[p.id]??providerColors.custom}}>{p.name[0]}</span>{p.name}
+       <ProviderIcon id={p.id} name={p.name}/>{p.name}
        {p.hasKey&&<i className="key-dot" title="API key saved">●</i>}
        {providerId===p.id&&<Check size={13}/>}
       </button>)}

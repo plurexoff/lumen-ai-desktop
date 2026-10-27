@@ -544,3 +544,6 @@ html:has(.app-shell.mica){background:transparent}
 /* Multiple custom providers: the "add" tile in the provider grid. */
 .provider-add{border-style:dashed;justify-content:center;color:var(--faint)}
 .provider-add:hover{border-color:var(--accent);color:var(--accent)}
+
+/* Brand glyphs in the provider grid (same tile footprint as the letter badge). */
+.provider-logo{width:17px;height:17px;flex:none}
