@@ -1,6 +1,6 @@
 // Android platform layer: a window.lumen-compatible implementation backed by
 // sql.js (chats/messages/providers), Capacitor Preferences (API keys) and
-// CapacitorHttp (provider calls, non-streaming вЂ” the plugin buffers responses,
+// CapacitorHttp (provider calls, non-streaming РІР‚вЂќ the plugin buffers responses,
 // so the UI gets one big chunk instead of a token stream on mobile).
 // Desktop-only features (workspace tools, MCP, quick window, updater) are stubs.
 import { CapacitorHttp } from '@capacitor/core';
@@ -179,7 +179,7 @@ export function createMobileApi(): DesktopAPI {
  const api: DesktopAPI = {
   window: { minimize() {}, toggleMaximize() {}, close() {}, setAlwaysOnTop() {} },
   app: {
-   async version() { return '1.1.1-android'; },
+   async version() { return '1.1.2-android'; },
    async pickFolder() { return null; },
    async profile(): Promise<AppProfile> { return { mica: false, username: '' }; },
   },
@@ -245,7 +245,7 @@ export function createMobileApi(): DesktopAPI {
     const msgs = rows<MsgRow>(d, 'SELECT * FROM messages WHERE chat_id=? ORDER BY created_at', [cid]);
     const content = format === 'json'
      ? JSON.stringify({ chat: chatFromRow(chat), messages: msgs.map(msgFromRow) }, null, 2)
-     : ['# ' + chat.title, '', ...msgs.map(m => `**${m.role === 'user' ? 'You' : 'Lumen'}** В· ${new Date(m.created_at).toLocaleString()}\n\n${m.content}`)].join('\n\n');
+     : ['# ' + chat.title, '', ...msgs.map(m => `**${m.role === 'user' ? 'You' : 'Lumen'}** Р’В· ${new Date(m.created_at).toLocaleString()}\n\n${m.content}`)].join('\n\n');
     // There is no save dialog on Android: write to the app cache and hand the UI
     // a real path (the toast shows it; the file is shareable from there).
     const safe = chat.title.replace(/[^\p{L}\p{N} _-]+/gu, '').trim().slice(0, 40) || 'chat';

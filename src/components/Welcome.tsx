@@ -1,6 +1,7 @@
 import {ArrowDown,KeyRound,Sparkles} from 'lucide-react';
 import type {MouseEvent} from 'react';
 import {useT} from '../i18n';
+import {isMobile} from '../platform/detect';
 
 const suggestions: Array<[string,string,string]>=[
  ['✦','welcome.sug1.title','welcome.sug1.sub'],
@@ -24,7 +25,7 @@ export default function Welcome({needsSetup,onSetup,onPick}:{needsSetup?:boolean
   {needsSetup&&<div className="setup-card">
    <KeyRound size={18}/>
    <div><b>{t('welcome.setup.title')}</b>
-    <small>{t('welcome.setup.body')}</small></div>
+    <small>{t(isMobile?'welcome.setup.bodyMobile':'welcome.setup.body')}</small></div>
    <button className="primary-button" onClick={onSetup}>{t('welcome.setup.button')}</button>
   </div>}
   <div className="suggestions">{suggestions.map(([icon,title,sub])=>

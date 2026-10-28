@@ -297,7 +297,7 @@ export default function SettingsModal(props:Props){
    <div className="settings-page">
     {tab==='providers'?<>
      <h3>{t('settings.providersTitle')}</h3>
-     <p>{t('settings.providersIntro')}</p>
+     <p>{t(isMobile?'settings.providersIntroMobile':'settings.providersIntro')}</p>
      <div className="provider-grid">{providers.map(p=>
       <button key={p.id} className={'provider-option '+(providerId===p.id?'chosen':'')}
        onClick={()=>{onProviderSelect(p.id);setBaseUrl(p.baseUrl);setProviderName(p.name);if(p.models[0])onModel(p.models[0]);}}>
@@ -467,7 +467,7 @@ export default function SettingsModal(props:Props){
     </>:<>
      <h3>{t('settings.dataTitle')}</h3><p>{t('settings.dataIntro')}</p>
      <div className="privacy-row"><Shield size={17}/><div><b>{t('settings.localFirst')}</b><small>{t('settings.localFirstHint')}</small></div><Check size={14}/></div>
-     <div className="privacy-row"><Shield size={17}/><div><b>{t('settings.encryptedKeys')}</b><small>{t('settings.encryptedKeysHint')}</small></div><Check size={14}/></div>
+     <div className="privacy-row"><Shield size={17}/><div><b>{t('settings.encryptedKeys')}</b><small>{t(isMobile?'settings.encryptedKeysHintMobile':'settings.encryptedKeysHint')}</small></div><Check size={14}/></div>
      {usage&&<div className="usage-summary">
       <h4>{t('settings.lifetimeUsage')}</h4>
       {(()=>{
